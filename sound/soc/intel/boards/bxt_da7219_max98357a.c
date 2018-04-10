@@ -32,8 +32,18 @@
 #define DUAL_CHANNEL		2
 #define QUAD_CHANNEL		4
 
+//#define SUPPORT_SPEAKER
+#define SUPPORT_CODEC
+//#define SUPPORT_DMIC
+//#define SUPPORT_HDMI
+
+#ifdef SUPPORT_CODEC
 static struct snd_soc_jack broxton_headset;
+#endif
+
+#ifdef SUPPORT_HDMI
 static struct snd_soc_jack broxton_hdmi[3];
+#endif
 
 struct bxt_hdmi_pcm {
 	struct list_head head;
@@ -59,10 +69,12 @@ static int platform_clock_control(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *k, int  event)
 {
 	int ret = 0;
+#ifdef SUPPORT_CODEC
 	struct snd_soc_dapm_context *dapm = w->dapm;
 	struct snd_soc_card *card = dapm->card;
-	struct snd_soc_dai *codec_dai;
+	struct snd_soc_dai *codec_dai;	
 
+	/* FIXME: Codec not supported */
 	codec_dai = snd_soc_card_get_codec_dai(card, BXT_DIALOG_CODEC_DAI);
 	if (!codec_dai) {
 		dev_err(card->dev, "Codec dai not found; Unable to set/unset codec pll\n");
@@ -80,36 +92,60 @@ static int platform_clock_control(struct snd_soc_dapm_widget *w,
 		if (ret)
 			dev_err(card->dev, "failed to start PLL: %d\n", ret);
 	}
+#endif
 
 	return ret;
 }
 
 static const struct snd_kcontrol_new broxton_controls[] = {
+#ifdef SUPPORT_CODEC
 	SOC_DAPM_PIN_SWITCH("Headphone Jack"),
 	SOC_DAPM_PIN_SWITCH("Headset Mic"),
+#endif
+
+#ifdef SUPPORT_SPEAKER
 	SOC_DAPM_PIN_SWITCH("Spk"),
+#endif
+	
 };
 
 static const struct snd_soc_dapm_widget broxton_widgets[] = {
+#ifdef SUPPORT_CODEC
 	SND_SOC_DAPM_HP("Headphone Jack", NULL),
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
+#endif
+	
+#ifdef SUPPORT_SPEAKER
 	SND_SOC_DAPM_SPK("Spk", NULL),
+#endif
+	
+#ifdef SUPPORT_DMIC
 	SND_SOC_DAPM_MIC("SoC DMIC", NULL),
+#endif
+
+#ifdef SUPPORT_HDMI
 	SND_SOC_DAPM_SPK("HDMI1", NULL),
 	SND_SOC_DAPM_SPK("HDMI2", NULL),
 	SND_SOC_DAPM_SPK("HDMI3", NULL),
+#endif
+	
 	SND_SOC_DAPM_SUPPLY("Platform Clock", SND_SOC_NOPM, 0, 0,
 			platform_clock_control,	SND_SOC_DAPM_POST_PMD|SND_SOC_DAPM_PRE_PMU),
 };
 
 static const struct snd_soc_dapm_route broxton_map[] = {
+#ifdef SUPPORT_CODEC
 	/* HP jack connectors - unknown if we have jack detection */
 	{"Headphone Jack", NULL, "HPL"},
 	{"Headphone Jack", NULL, "HPR"},
+#endif
 
+#ifdef SUPPORT_SPEAKER
 	/* speaker */
 	{"Spk", NULL, "Speaker"},
+#endif
 
+#if !IS_ENABLED(CONFIG_SND_SOC_SOF_INTEL)
 	/* other jacks */
 	{"MIC", NULL, "Headset Mic"},
 
@@ -140,11 +176,16 @@ static const struct snd_soc_dapm_route broxton_map[] = {
 	/* DMIC */
 	{"dmic01_hifi", NULL, "DMIC01 Rx"},
 	{"DMIC01 Rx", NULL, "DMIC AIF"},
+#endif
 
+#ifdef SUPPORT_CODEC
 	{ "Headphone Jack", NULL, "Platform Clock" },
 	{ "Headset Mic", NULL, "Platform Clock" },
+#endif
+
 };
 
+#if defined(SUPPORT_SPEAKER) || defined(SUPPORT_CODEC)
 static int broxton_ssp_fixup(struct snd_soc_pcm_runtime *rtd,
 			struct snd_pcm_hw_params *params)
 {
@@ -164,10 +205,13 @@ static int broxton_ssp_fixup(struct snd_soc_pcm_runtime *rtd,
 
 	return 0;
 }
+#endif
 
+#ifdef SUPPORT_CODEC
 static int broxton_da7219_codec_init(struct snd_soc_pcm_runtime *rtd)
 {
-	int ret;
+	int ret = 0;
+
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
 	struct snd_soc_codec *codec = rtd->codec;
 
@@ -194,11 +238,15 @@ static int broxton_da7219_codec_init(struct snd_soc_pcm_runtime *rtd)
 
 	da7219_aad_jack_det(codec, &broxton_headset);
 
+#ifdef SUPPORT_DMIC
 	snd_soc_dapm_ignore_suspend(&rtd->card->dapm, "SoC DMIC");
-
+#endif
+	
 	return ret;
 }
+#endif
 
+#ifdef SUPPORT_HDMI
 static int broxton_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct bxt_card_private *ctx = snd_soc_card_get_drvdata(rtd->card);
@@ -216,7 +264,9 @@ static int broxton_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 
 	return 0;
 }
+#endif
 
+#if !IS_ENABLED(CONFIG_SND_SOC_SOF_INTEL)
 static int broxton_da7219_fe_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_dapm_context *dapm;
@@ -224,9 +274,10 @@ static int broxton_da7219_fe_init(struct snd_soc_pcm_runtime *rtd)
 
 	dapm = snd_soc_component_get_dapm(component);
 	snd_soc_dapm_ignore_suspend(dapm, "Reference Capture");
-
+	
 	return 0;
 }
+#endif
 
 static const unsigned int rates[] = {
 	48000,
@@ -286,6 +337,7 @@ static const struct snd_soc_ops broxton_da7219_fe_ops = {
 	.startup = bxt_fe_startup,
 };
 
+#ifdef SUPPORT_DMIC
 static int broxton_dmic_fixup(struct snd_soc_pcm_runtime *rtd,
 			struct snd_pcm_hw_params *params)
 {
@@ -323,7 +375,9 @@ static const struct snd_pcm_hw_constraint_list constraints_16000 = {
 	.count = ARRAY_SIZE(rates_16000),
 	.list  = rates_16000,
 };
+#endif
 
+#if !IS_ENABLED(CONFIG_SND_SOC_SOF_INTEL)
 static int broxton_refcap_startup(struct snd_pcm_substream *substream)
 {
 	return snd_pcm_hw_constraint_list(substream->runtime, 0,
@@ -334,9 +388,11 @@ static int broxton_refcap_startup(struct snd_pcm_substream *substream)
 static const struct snd_soc_ops broxton_refcap_ops = {
 	.startup = broxton_refcap_startup,
 };
+#endif
 
 /* broxton digital audio interface glue - connects codec <--> CPU */
 static struct snd_soc_dai_link broxton_dais[] = {
+#if !IS_ENABLED(CONFIG_SND_SOC_SOF_INTEL)
 	/* Front End DAI links */
 	[BXT_DPCM_AUDIO_PB] =
 	{
@@ -436,7 +492,9 @@ static struct snd_soc_dai_link broxton_dais[] = {
 		.nonatomic = 1,
 		.dynamic = 1,
 	},
+#endif
 	/* Back End DAI links */
+#ifdef SUPPORT_SPEAKER
 	{
 		/* SSP5 - Codec */
 		.name = "SSP5-Codec",
@@ -453,10 +511,17 @@ static struct snd_soc_dai_link broxton_dais[] = {
 		.be_hw_params_fixup = broxton_ssp_fixup,
 		.dpcm_playback = 1,
 	},
+#endif
+	
+#ifdef SUPPORT_CODEC
 	{
 		/* SSP1 - Codec */
 		.name = "SSP1-Codec",
+#ifndef SUPPORT_SPEAKER
+		.id = 0,
+#else
 		.id = 1,
+#endif
 		.cpu_dai_name = "SSP1 Pin",
 		.platform_name = "0000:00:0e.0",
 		.no_pcm = 1,
@@ -470,6 +535,9 @@ static struct snd_soc_dai_link broxton_dais[] = {
 		.dpcm_playback = 1,
 		.dpcm_capture = 1,
 	},
+#endif
+
+#ifdef SUPPORT_DMIC
 	{
 		.name = "dmic01",
 		.id = 2,
@@ -482,6 +550,9 @@ static struct snd_soc_dai_link broxton_dais[] = {
 		.dpcm_capture = 1,
 		.no_pcm = 1,
 	},
+	#endif
+
+#ifdef SUPPORT_HDMI
 	{
 		.name = "iDisp1",
 		.id = 3,
@@ -515,8 +586,10 @@ static struct snd_soc_dai_link broxton_dais[] = {
 		.dpcm_playback = 1,
 		.no_pcm = 1,
 	},
+#endif
 };
 
+#ifdef SUPPORT_HDMI
 #define NAME_SIZE	32
 static int bxt_card_late_probe(struct snd_soc_card *card)
 {
@@ -550,6 +623,7 @@ static int bxt_card_late_probe(struct snd_soc_card *card)
 
 	return hdac_hdmi_jack_port_init(codec, &card->dapm);
 }
+#endif
 
 /* broxton audio machine driver for SPT + da7219 */
 static struct snd_soc_card broxton_audio_card = {
@@ -564,7 +638,9 @@ static struct snd_soc_card broxton_audio_card = {
 	.dapm_routes = broxton_map,
 	.num_dapm_routes = ARRAY_SIZE(broxton_map),
 	.fully_routed = true,
+#ifdef SUPPORT_HDMI
 	.late_probe = bxt_card_late_probe,
+#endif
 };
 
 static int broxton_audio_probe(struct platform_device *pdev)
