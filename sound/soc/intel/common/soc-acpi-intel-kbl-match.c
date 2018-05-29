@@ -37,6 +37,9 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_kbl_machines[] = {
 		.id = "INT343A",
 		.drv_name = "kbl_alc286s_i2s",
 		.fw_filename = "intel/dsp_fw_kbl.bin",
+		.sof_fw_filename = "intel/sof-kbl.ri",
+		.sof_tplg_filename = "intel/sof-kbl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{
 		.id = "INT343B",
@@ -44,7 +47,10 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_kbl_machines[] = {
 		.fw_filename = "intel/dsp_fw_kbl.bin",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &kbl_codecs,
-		.pdata = &skl_dmic_data
+		.pdata = &skl_dmic_data,
+		.sof_fw_filename = "intel/sof-kbl.ri",
+		.sof_tplg_filename = "intel/sof-kbl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{
 		.id = "MX98357A",
@@ -52,7 +58,10 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_kbl_machines[] = {
 		.fw_filename = "intel/dsp_fw_kbl.bin",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &kbl_codecs,
-		.pdata = &skl_dmic_data
+		.pdata = &skl_dmic_data,
+		.sof_fw_filename = "intel/sof-kbl.ri",
+		.sof_tplg_filename = "intel/sof-kbl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{
 		.id = "MX98927",
@@ -60,7 +69,10 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_kbl_machines[] = {
 		.fw_filename = "intel/dsp_fw_kbl.bin",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &kbl_5663_5514_codecs,
-		.pdata = &skl_dmic_data
+		.pdata = &skl_dmic_data,
+		.sof_fw_filename = "intel/sof-kbl.ri",
+		.sof_tplg_filename = "intel/sof-kbl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{
 		.id = "MX98927",
@@ -68,12 +80,18 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_kbl_machines[] = {
 		.fw_filename = "intel/dsp_fw_kbl.bin",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &kbl_poppy_codecs,
-		.pdata = &skl_dmic_data
+		.pdata = &skl_dmic_data,
+		.sof_fw_filename = "intel/sof-kbl.ri",
+		.sof_tplg_filename = "intel/sof-kbl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{
 		.id = "10EC5663",
 		.drv_name = "kbl_rt5663",
 		.fw_filename = "intel/dsp_fw_kbl.bin",
+		.sof_fw_filename = "intel/sof-kbl.ri",
+		.sof_tplg_filename = "intel/sof-kbl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{
 		.id = "DLGS7219",
@@ -81,7 +99,10 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_kbl_machines[] = {
 		.fw_filename = "intel/dsp_fw_kbl.bin",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &kbl_7219_98357_codecs,
-		.pdata = &skl_dmic_data
+		.pdata = &skl_dmic_data,
+		.sof_fw_filename = "intel/sof-kbl.ri",
+		.sof_tplg_filename = "intel/sof-kbl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{},
 };

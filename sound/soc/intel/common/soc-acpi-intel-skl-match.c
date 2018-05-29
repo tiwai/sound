@@ -22,6 +22,9 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_skl_machines[] = {
 		.id = "INT343A",
 		.drv_name = "skl_alc286s_i2s",
 		.fw_filename = "intel/dsp_fw_release.bin",
+		.sof_fw_filename = "intel/sof-skl.ri",
+		.sof_tplg_filename = "intel/sof-skl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{
 		.id = "INT343B",
@@ -29,7 +32,10 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_skl_machines[] = {
 		.fw_filename = "intel/dsp_fw_release.bin",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &skl_codecs,
-		.pdata = &skl_dmic_data
+		.pdata = &skl_dmic_data,
+		.sof_fw_filename = "intel/sof-skl.ri",
+		.sof_tplg_filename = "intel/sof-skl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{
 		.id = "MX98357A",
@@ -37,7 +43,10 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_skl_machines[] = {
 		.fw_filename = "intel/dsp_fw_release.bin",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &skl_codecs,
-		.pdata = &skl_dmic_data
+		.pdata = &skl_dmic_data,
+		.sof_fw_filename = "intel/sof-skl.ri",
+		.sof_tplg_filename = "intel/sof-skl.tplg",
+		.asoc_plat_name = "0000:00:1f.03",
 	},
 	{},
 };
