@@ -47,6 +47,8 @@ struct snd_rawmidi_global_ops {
 	int (*dev_unregister) (struct snd_rawmidi * rmidi);
 	void (*get_port_info)(struct snd_rawmidi *rmidi, int number,
 			      struct snd_seq_port_info *info);
+	long (*ioctl)(struct snd_rawmidi *rmidi, unsigned int cmd,
+		      void __user *argp);
 };
 
 struct snd_rawmidi_runtime {
@@ -61,6 +63,7 @@ struct snd_rawmidi_runtime {
 	size_t avail_min;	/* min avail for wakeup */
 	size_t avail;		/* max used buffer for wakeup */
 	size_t xruns;		/* over/underruns counter */
+	size_t align;		/* alignment (0 = byte stream, 3 = UMP) */
 	int buffer_ref;		/* buffer reference count */
 	/* misc */
 	wait_queue_head_t sleep;
@@ -145,6 +148,13 @@ int snd_rawmidi_new(struct snd_card *card, char *id, int device,
 		    struct snd_rawmidi **rmidi);
 void snd_rawmidi_set_ops(struct snd_rawmidi *rmidi, int stream,
 			 const struct snd_rawmidi_ops *ops);
+
+/* internal */
+int snd_rawmidi_init(struct snd_rawmidi *rmidi,
+		     struct snd_card *card, char *id, int device,
+		     int output_count, int input_count,
+		     unsigned int info_flags);
+int snd_rawmidi_free(struct snd_rawmidi *rmidi);
 
 /* callbacks */
 
