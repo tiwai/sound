@@ -767,6 +767,29 @@ static int find_matching_ep_partner(struct snd_usb_midi2_interface *umidi,
 	return 0;
 }
 
+/* Call UMP helper to parse UMP endpoints;
+ * this needs to be called after starting the input streams for bi-directional
+ * communications
+ */
+static int parse_ump_endpoints(struct snd_usb_midi2_interface *umidi)
+{
+	struct snd_usb_midi2_ump *rmidi;
+	int err;
+
+	list_for_each_entry(rmidi, &umidi->rawmidi_list, list) {
+		if (!rmidi->ump ||
+		    !(rmidi->ump->core.info_flags & SNDRV_RAWMIDI_INFO_DUPLEX))
+			continue;
+		err = snd_ump_parse_endpoint(rmidi->ump);
+		if (err < 0) {
+			if (err == -ENOMEM)
+				return err;
+			continue; /* fall back to GTB later */
+		}
+	}
+	return 0;
+}
+
 /* create a UMP block from a GTB entry */
 static int create_gtb_block(struct snd_usb_midi2_ump *rmidi, int dir, int blk)
 {
@@ -1050,6 +1073,12 @@ int snd_usb_midi_v2_create(struct snd_usb_audio *chip,
 	err = start_input_streams(umidi);
 	if (err < 0) {
 		usb_audio_err(chip, "Failed to start input streams\n");
+		goto error;
+	}
+
+	err = parse_ump_endpoints(umidi);
+	if (err < 0) {
+		usb_audio_err(chip, "Failed to parse UMP endpoint\n");
 		goto error;
 	}
 
