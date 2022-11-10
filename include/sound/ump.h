@@ -19,6 +19,11 @@ struct snd_ump_endpoint {
 	void (*private_free)(struct snd_ump_endpoint *ump);
 
 	struct list_head fb_list;	/* list of snd_ump_block objects */
+
+#if IS_ENABLED(CONFIG_SND_SEQUENCER)
+	struct snd_seq_device *seq_dev;
+	void *seq_client;
+#endif
 };
 
 struct snd_ump_block {

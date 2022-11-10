@@ -62,10 +62,15 @@ config SND_SEQ_VIRMIDI
 
 config SND_SEQ_UMP
 	bool "Support for UMP events"
+	default y if SND_SEQ_UMP_CLIENT
 	help
 	  Say Y here to enable the support for handling UMP (Universal MIDI
 	  Protocol) packets via ALSA sequencer infrastructure, essentially
 	  for enabling MIDI 2.0 support.  It includes the automatic conversion
 	  of ALSA sequencer events between legacy and UMP types.
+
+config SND_SEQ_UMP_CLIENT
+	tristate
+	def_tristate SND_UMP
 
 endif # SND_SEQUENCER
