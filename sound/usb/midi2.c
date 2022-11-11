@@ -874,12 +874,32 @@ static int set_altset(struct snd_usb_midi2_interface *umidi)
 /* fill the fallback name string for each rawmidi instance */
 static void set_fallback_rawmidi_names(struct snd_usb_midi2_interface *umidi)
 {
+	struct usb_device *dev = umidi->chip->dev;
 	struct snd_usb_midi2_ump *rmidi;
+	struct snd_ump_endpoint *ump;
 
 	list_for_each_entry(rmidi, &umidi->rawmidi_list, list) {
-		if (!*rmidi->ump->core.name)
-			sprintf(rmidi->ump->core.name, "USB MIDI %d",
-				rmidi->index);
+		ump = rmidi->ump;
+		if (!*ump->core.name) {
+			if (umidi->hostif->desc.iInterface) {
+				usb_string(dev, umidi->hostif->desc.iInterface,
+					   ump->core.name,
+					   sizeof(ump->core.name));
+				ump->core.name[sizeof(ump->core.name) - 1] = 0;
+			}
+			if (!*ump->core.name)
+				sprintf(ump->core.name, "USB MIDI %d",
+					rmidi->index);
+		}
+		if (!*ump->info.product_id && dev->descriptor.iProduct) {
+			usb_string(dev, dev->descriptor.iProduct,
+				   ump->info.product_id,
+				   sizeof(ump->info.product_id));
+			ump->info.product_id[sizeof(ump->info.product_id) - 1] = 0;
+			if (!*ump->info.name)
+				strscpy(ump->info.name, ump->info.product_id,
+					sizeof(ump->info.name));
+		}
 	}
 }
 
