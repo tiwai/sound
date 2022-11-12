@@ -10,7 +10,7 @@
 #include <sound/asound.h>
 
 /** version of the sequencer */
-#define SNDRV_SEQ_VERSION SNDRV_PROTOCOL_VERSION(1, 0, 2)
+#define SNDRV_SEQ_VERSION SNDRV_PROTOCOL_VERSION(1, 0, 3)
 
 /**
  * definition of sequencer event types
@@ -117,6 +117,7 @@
  */
 #define SNDRV_SEQ_EVENT_SYSEX		130	/* system exclusive data (variable length) */
 #define SNDRV_SEQ_EVENT_BOUNCE		131	/* error event */
+#define SNDRV_SEQ_EVENT_UMP_VAR		132	/* multiple UMP packets */
 /* 132-134: reserved */
 #define SNDRV_SEQ_EVENT_USR_VAR0	135
 #define SNDRV_SEQ_EVENT_USR_VAR1	136
@@ -130,7 +131,10 @@
 
 /* 152-191: reserved */
 
-/* 192-254: hardware specific events */
+/* 192-253: hardware specific events */
+
+/* 254: UMP single packet; event type = ump */
+#define SNDRV_SEQ_EVENT_UMP		254
 
 /* 255: special event */
 #define SNDRV_SEQ_EVENT_NONE		255
@@ -252,6 +256,10 @@ struct snd_seq_ev_quote {
 	struct snd_seq_event *event;		/* quoted event */
 } __attribute__((packed));
 
+	/* UMP event - 32bit little-endian UMP raw packets */
+struct snd_seq_ev_ump {
+	__le32 d[3];
+} __attribute__((packed));
 
 	/* sequencer event */
 struct snd_seq_event {
@@ -278,6 +286,7 @@ struct snd_seq_event {
 		struct snd_seq_connect connect;
 		struct snd_seq_result result;
 		struct snd_seq_ev_quote quote;
+		struct snd_seq_ev_ump ump;
 	} data;
 };
 
@@ -344,9 +353,14 @@ struct snd_seq_client_info {
 	int event_lost;			/* number of lost events */
 	int card;			/* RO: card number[kernel] */
 	int pid;			/* RO: pid[user] */
-	char reserved[56];		/* for future use */
+	unsigned int midi_version;	/* RO: MIDI version */
+	char reserved[52];		/* for future use */
 };
 
+/* MIDI version numbers in client info */
+#define SNDRV_SEQ_CLIENT_LEGACY_MIDI		0	/* Legacy client */
+#define SNDRV_SEQ_CLIENT_UMP_MIDI_1_0		1	/* UMP MIDI 1.0 */
+#define SNDRV_SEQ_CLIENT_UMP_MIDI_2_0		2	/* UMP MIDI 2.0 */
 
 /* client pool size */
 struct snd_seq_client_pool {
@@ -563,6 +577,7 @@ struct snd_seq_query_subs {
 #define SNDRV_SEQ_IOCTL_CLIENT_ID	_IOR ('S', 0x01, int)
 #define SNDRV_SEQ_IOCTL_SYSTEM_INFO	_IOWR('S', 0x02, struct snd_seq_system_info)
 #define SNDRV_SEQ_IOCTL_RUNNING_MODE	_IOWR('S', 0x03, struct snd_seq_running_info)
+#define SNDRV_SEQ_IOCTL_USER_PVERSION	_IOW('S', 0x04, int)
 
 #define SNDRV_SEQ_IOCTL_GET_CLIENT_INFO	_IOWR('S', 0x10, struct snd_seq_client_info)
 #define SNDRV_SEQ_IOCTL_SET_CLIENT_INFO	_IOW ('S', 0x11, struct snd_seq_client_info)

@@ -1099,6 +1099,12 @@ static int snd_seq_ioctl_pversion(struct snd_seq_client *client, void *arg)
 	return 0;
 }
 
+static int snd_seq_ioctl_user_pversion(struct snd_seq_client *client, void *arg)
+{
+	client->user_pversion = *(unsigned int *)arg;
+	return 0;
+}
+
 static int snd_seq_ioctl_client_id(struct snd_seq_client *client, void *arg)
 {
 	int *client_id = arg;
@@ -1183,6 +1189,7 @@ static void get_client_info(struct snd_seq_client *cptr,
 	else
 		info->card = -1;
 
+	info->midi_version = cptr->midi_version;
 	memset(info->reserved, 0, sizeof(info->reserved));
 }
 
@@ -1217,12 +1224,19 @@ static int snd_seq_ioctl_set_client_info(struct snd_seq_client *client,
 	if (client->type != client_info->type)
 		return -EINVAL;
 
+	/* check validity of midi_version field */
+	if (client->user_pversion >= SNDRV_PROTOCOL_VERSION(1, 0, 3) &&
+	    client_info->midi_version > SNDRV_SEQ_CLIENT_UMP_MIDI_2_0)
+		return -EINVAL;
+
 	/* fill the info fields */
 	if (client_info->name[0])
 		strscpy(client->name, client_info->name, sizeof(client->name));
 
 	client->filter = client_info->filter;
 	client->event_lost = client_info->event_lost;
+	if (client->user_pversion >= SNDRV_PROTOCOL_VERSION(1, 0, 3))
+		client->midi_version = client_info->midi_version;
 	memcpy(client->event_filter, client_info->event_filter, 32);
 
 	return 0;
@@ -2034,6 +2048,7 @@ static const struct ioctl_handler {
 	int (*func)(struct snd_seq_client *client, void *arg);
 } ioctl_handlers[] = {
 	{ SNDRV_SEQ_IOCTL_PVERSION, snd_seq_ioctl_pversion },
+	{ SNDRV_SEQ_IOCTL_USER_PVERSION, snd_seq_ioctl_user_pversion },
 	{ SNDRV_SEQ_IOCTL_CLIENT_ID, snd_seq_ioctl_client_id },
 	{ SNDRV_SEQ_IOCTL_SYSTEM_INFO, snd_seq_ioctl_system_info },
 	{ SNDRV_SEQ_IOCTL_RUNNING_MODE, snd_seq_ioctl_running_mode },
@@ -2174,6 +2189,7 @@ int snd_seq_create_kernel_client(struct snd_card *card, int client_index,
 	client->accept_input = 1;
 	client->accept_output = 1;
 	client->data.kernel.card = card;
+	client->user_pversion = SNDRV_SEQ_VERSION;
 		
 	va_start(args, name_fmt);
 	vsnprintf(client->name, sizeof(client->name), name_fmt, args);
@@ -2419,6 +2435,19 @@ static void snd_seq_info_dump_ports(struct snd_info_buffer *buffer,
 	mutex_unlock(&client->ports_mutex);
 }
 
+static const char *midi_version_string(unsigned int version)
+{
+	switch (version) {
+	case SNDRV_SEQ_CLIENT_LEGACY_MIDI:
+		return "Legacy";
+	case SNDRV_SEQ_CLIENT_UMP_MIDI_1_0:
+		return "UMP MIDI1";
+	case SNDRV_SEQ_CLIENT_UMP_MIDI_2_0:
+		return "UMP MIDI2";
+	default:
+		return "Unknown";
+	}
+}
 
 /* exported to seq_info.c */
 void snd_seq_info_clients_read(struct snd_info_entry *entry, 
@@ -2443,9 +2472,10 @@ void snd_seq_info_clients_read(struct snd_info_entry *entry,
 			continue;
 		}
 
-		snd_iprintf(buffer, "Client %3d : \"%s\" [%s]\n",
+		snd_iprintf(buffer, "Client %3d : \"%s\" [%s %s]\n",
 			    c, client->name,
-			    client->type == USER_CLIENT ? "User" : "Kernel");
+			    client->type == USER_CLIENT ? "User" : "Kernel",
+			    midi_version_string(client->midi_version));
 		snd_seq_info_dump_ports(buffer, client);
 		if (snd_seq_write_pool_allocated(client)) {
 			snd_iprintf(buffer, "  Output pool :\n");
