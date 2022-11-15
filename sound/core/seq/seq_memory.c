@@ -63,8 +63,9 @@ static int get_var_len(const struct snd_seq_event *event)
 	return event->data.ext.len & ~SNDRV_SEQ_EXT_MASK;
 }
 
-int snd_seq_dump_var_event(const struct snd_seq_event *event,
-			   snd_seq_dump_func_t func, void *private_data)
+static int dump_var_event(const struct snd_seq_event *event,
+			  snd_seq_dump_func_t func, void *private_data,
+			  int offset)
 {
 	int len, err;
 	struct snd_seq_event_cell *cell;
@@ -72,10 +73,14 @@ int snd_seq_dump_var_event(const struct snd_seq_event *event,
 	len = get_var_len(event);
 	if (len <= 0)
 		return len;
+	if (len <= offset)
+		return 0;
 
 	if (event->data.ext.len & SNDRV_SEQ_EXT_USRPTR) {
 		char buf[32];
 		char __user *curptr = (char __force __user *)event->data.ext.ptr;
+		curptr += offset;
+		len -= offset;
 		while (len > 0) {
 			int size = sizeof(buf);
 			if (len < size)
@@ -91,19 +96,32 @@ int snd_seq_dump_var_event(const struct snd_seq_event *event,
 		return 0;
 	}
 	if (!(event->data.ext.len & SNDRV_SEQ_EXT_CHAINED))
-		return func(private_data, event->data.ext.ptr, len);
+		return func(private_data, event->data.ext.ptr + offset,
+			    len - offset);
 
 	cell = (struct snd_seq_event_cell *)event->data.ext.ptr;
+	len += offset;
 	for (; len > 0 && cell; cell = cell->next) {
 		int size = sizeof(struct snd_seq_event);
+		char *curptr = (char *)&cell->event;
+
 		if (len < size)
 			size = len;
-		err = func(private_data, &cell->event, size);
-		if (err < 0)
-			return err;
+		if (offset < len) {
+			err = func(private_data, curptr + offset, size - offset);
+			if (err < 0)
+				return err;
+			offset = 0;
+		}
 		len -= size;
 	}
 	return 0;
+}
+
+int snd_seq_dump_var_event(const struct snd_seq_event *event,
+			   snd_seq_dump_func_t func, void *private_data)
+{
+	return dump_var_event(event, func, private_data, 0);
 }
 EXPORT_SYMBOL(snd_seq_dump_var_event);
 
@@ -132,8 +150,9 @@ static int seq_copy_in_user(void *ptr, void *src, int size)
 	return 0;
 }
 
-int snd_seq_expand_var_event(const struct snd_seq_event *event, int count, char *buf,
-			     int in_kernel, int size_aligned)
+static int expand_var_event(const struct snd_seq_event *event, int count,
+			    char *buf, bool in_kernel, int size_aligned,
+			    int offset)
 {
 	int len, newlen;
 	int err;
@@ -141,10 +160,12 @@ int snd_seq_expand_var_event(const struct snd_seq_event *event, int count, char 
 	len = get_var_len(event);
 	if (len < 0)
 		return len;
+	if (len <= offset)
+		return 0;
 	newlen = len;
 	if (size_aligned > 0)
 		newlen = roundup(len, size_aligned);
-	if (count < newlen)
+	if (count + offset < newlen)
 		return -EAGAIN;
 
 	if (event->data.ext.len & SNDRV_SEQ_EXT_USRPTR) {
@@ -154,12 +175,25 @@ int snd_seq_expand_var_event(const struct snd_seq_event *event, int count, char 
 			return -EFAULT;
 		return newlen;
 	}
-	err = snd_seq_dump_var_event(event,
-				     in_kernel ? seq_copy_in_kernel : seq_copy_in_user,
-				     &buf);
+	err = dump_var_event(event,
+			     in_kernel ? seq_copy_in_kernel : seq_copy_in_user,
+			     &buf, offset);
 	return err < 0 ? err : newlen;
 }
+
+int snd_seq_expand_var_event(const struct snd_seq_event *event, int count, char *buf,
+			     int in_kernel, int size_aligned)
+{
+	return expand_var_event(event, count, buf, in_kernel, size_aligned, 0);
+}
 EXPORT_SYMBOL(snd_seq_expand_var_event);
+
+int snd_seq_expand_var_event_at(const struct snd_seq_event *event, int count,
+				char *buf, int offset)
+{
+	return expand_var_event(event, count, buf, true, 0, offset);
+}
+EXPORT_SYMBOL_GPL(snd_seq_expand_var_event_at);
 
 /*
  * release this cell, free extended data if available
