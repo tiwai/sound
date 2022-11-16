@@ -596,13 +596,7 @@ find_group_terminal_block(struct snd_usb_midi2_interface *umidi, int id)
 static int parse_group_terminal_block(struct snd_usb_midi2_ump *rmidi,
 				      const struct usb_ms20_gr_trm_block_descriptor *desc)
 {
-	struct snd_usb_audio *chip = rmidi->umidi->chip;
 	struct snd_ump_endpoint *ump = rmidi->ump;
-
-	usb_audio_dbg(chip,
-		      "GTB id %d: groups = %d / %d, type = %d\n",
-		      desc->bGrpTrmBlkID, desc->nGroupTrm, desc->nNumGroupTrm,
-		      desc->bGrpTrmBlkType);
 
 	/* set default protocol */
 	switch (desc->bMIDIProtocol) {
@@ -756,10 +750,23 @@ static int create_midi2_ump(struct snd_usb_midi2_interface *umidi,
 	return 0;
 }
 
-/* look for the matching output endpoint and create UMP object */
-static int find_midi2_ump(struct snd_usb_midi2_interface *umidi,
-			  struct snd_usb_midi2_endpoint *ep,
-			  int blk_id)
+/* find the UMP EP with the given USB block id */
+static struct snd_usb_midi2_ump *
+find_midi2_ump(struct snd_usb_midi2_interface *umidi, int blk_id)
+{
+	struct snd_usb_midi2_ump *rmidi;
+
+	list_for_each_entry(rmidi, &umidi->rawmidi_list, list) {
+		if (rmidi->usb_block_id == blk_id)
+			return rmidi;
+	}
+	return NULL;
+}
+
+/* look for the matching output endpoint and create UMP object if found */
+static int find_matching_ep_partner(struct snd_usb_midi2_interface *umidi,
+				    struct snd_usb_midi2_endpoint *ep,
+				    int blk_id)
 {
 	struct snd_usb_midi2_endpoint *pair_ep;
 	int blk;
@@ -780,6 +787,93 @@ static int find_midi2_ump(struct snd_usb_midi2_interface *umidi,
 			}
 		}
 	}
+	return 0;
+}
+
+/* create a UMP block from a GTB entry */
+static int create_gtb_block(struct snd_usb_midi2_ump *rmidi, int dir, int blk)
+{
+	struct snd_usb_midi2_interface *umidi = rmidi->umidi;
+	const struct usb_ms20_gr_trm_block_descriptor *desc;
+	struct snd_ump_block *fb;
+	int type, err;
+
+	desc = find_group_terminal_block(umidi, blk);
+	if (!desc)
+		return 0;
+
+	usb_audio_dbg(umidi->chip,
+		      "GTB %d: type=%d, group=%d/%d, protocol=%d, in bw=%d, out bw=%d\n",
+		      blk, desc->bGrpTrmBlkType, desc->nGroupTrm,
+		      desc->nNumGroupTrm, desc->bMIDIProtocol,
+		      __le16_to_cpu(desc->wMaxInputBandwidth),
+		      __le16_to_cpu(desc->wMaxOutputBandwidth));
+
+	/* assign the direction */
+	switch (desc->bGrpTrmBlkType) {
+	case USB_MS_GRP_TRM_BLK_TYPE_BIDIRECTIONAL:
+		type = SNDRV_UMP_DIR_BIDIRECTION;
+		break;
+	case USB_MS_GRP_TRM_BLK_TYPE_INPUT_ONLY:
+		type = SNDRV_UMP_DIR_INPUT;
+		break;
+	case USB_MS_GRP_TRM_BLK_TYPE_OUTPUT_ONLY:
+		type = SNDRV_UMP_DIR_OUTPUT;
+		break;
+	default:
+		usb_audio_dbg(umidi->chip, "Unsupported GTB type %d\n", type);
+		return 0; /* unsupported */
+	}
+
+	/* guess work: set blk-1 as the FB ID */
+	err = snd_ump_block_new(rmidi->ump, blk - 1, type,
+				desc->nGroupTrm, desc->nNumGroupTrm,
+				&fb);
+	if (err == -EBUSY)
+		return 0; /* already present */
+	else if (err)
+		return err;
+
+	if (desc->iBlockterm) {
+		usb_string(rmidi->dev, desc->iBlockterm,
+			   fb->info.name, sizeof(fb->info.name));
+		fb->info.name[sizeof(fb->info.name) - 1] = 0;
+	}
+
+	if (__le16_to_cpu(desc->wMaxInputBandwidth) == 1 ||
+	    __le16_to_cpu(desc->wMaxOutputBandwidth) == 1)
+		fb->info.flags |= SNDRV_UMP_BLOCK_IS_MIDI1 |
+			SNDRV_UMP_BLOCK_IS_LOWSPEED;
+
+	usb_audio_dbg(umidi->chip,
+		      "Created a UMP block %d from GTB, name=%s\n",
+		      blk, fb->info.name);
+	return 0;
+}
+
+/* Create UMP blocks for EP pairs */
+static int create_blocks_from_gtb(struct snd_usb_midi2_interface *umidi)
+{
+	struct snd_usb_midi2_ump *rmidi;
+	int i, blk, err, dir;
+
+	list_for_each_entry(rmidi, &umidi->rawmidi_list, list) {
+		/* FBs already created?*/
+		if (rmidi->ump->info.num_blocks)
+			continue;
+		/* loop over GTBs */
+		for (dir = 0; dir < 2; dir++) {
+			if (!rmidi->eps[dir])
+				continue;
+			for (i = 0; i < rmidi->eps[dir]->ms_ep->bNumGrpTrmBlock; i++) {
+				blk = rmidi->eps[dir]->ms_ep->baAssoGrpTrmBlkID[i];
+				err = create_gtb_block(rmidi, dir, blk);
+				if (err < 0)
+					return err;
+			}
+		}
+	}
+
 	return 0;
 }
 
@@ -818,7 +912,7 @@ static int parse_midi_2_0(struct snd_usb_midi2_interface *umidi)
 			continue;
 		for (blk = 0; blk < ep->ms_ep->bNumGrpTrmBlock; blk++) {
 			id = ep->ms_ep->baAssoGrpTrmBlkID[blk];
-			err = find_midi2_ump(umidi, ep, id);
+			err = find_matching_ep_partner(umidi, ep, id);
 			if (err < 0)
 				return err;
 		}
@@ -830,16 +924,21 @@ static int parse_midi_2_0(struct snd_usb_midi2_interface *umidi)
 	 */
 	list_for_each_entry(ep, &umidi->ep_list, list) {
 		if (ep->rmidi)
-			continue;
-		usb_audio_dbg(umidi->chip, "Creating a single EP 0x%02x\n",
-			      ep->endpoint);
-		id = ep->ms_ep->baAssoGrpTrmBlkID[0];
-		if (ep->direction == STR_IN)
-			err = create_midi2_ump(umidi, ep, NULL, id);
-		else
-			err = create_midi2_ump(umidi, NULL, ep, id);
-		if (err < 0)
-			return err;
+			continue; /* already paired */
+		for (blk = 0; blk < ep->ms_ep->bNumGrpTrmBlock; blk++) {
+			id = ep->ms_ep->baAssoGrpTrmBlkID[blk];
+			if (find_midi2_ump(umidi, id))
+				continue;
+			usb_audio_dbg(umidi->chip,
+				      "Creating a unidirection block for EP=0x%02x, blk=%d\n",
+				      ep->endpoint, id);
+			if (ep->direction == STR_IN)
+				err = create_midi2_ump(umidi, ep, NULL, id);
+			else
+				err = create_midi2_ump(umidi, NULL, ep, id);
+			if (err < 0)
+				return err;
+		}
 	}
 
 	return 0;
@@ -974,6 +1073,12 @@ int snd_usb_midi_v2_create(struct snd_usb_audio *chip,
 	err = start_input_streams(umidi);
 	if (err < 0) {
 		usb_audio_err(chip, "Failed to start input streams\n");
+		goto error;
+	}
+
+	err = create_blocks_from_gtb(umidi);
+	if (err < 0) {
+		usb_audio_err(chip, "Failed to create GTB blocks\n");
 		goto error;
 	}
 
