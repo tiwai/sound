@@ -37,6 +37,7 @@ struct snd_ump_endpoint {
 
 #if IS_ENABLED(CONFIG_SND_SEQUENCER)
 	struct snd_seq_device *seq_dev;
+	const struct snd_seq_ump_ops *seq_ops;
 	void *seq_client;
 #endif
 };
@@ -47,6 +48,11 @@ struct snd_ump_ops {
 	void (*close)(struct snd_ump_endpoint *ump, int dir);
 	void (*trigger)(struct snd_ump_endpoint *ump, int dir, int up);
 	void (*drain)(struct snd_ump_endpoint *ump, int dir);
+};
+
+/* ops filled by sequencer binding */
+struct snd_seq_ump_ops {
+	int (*switch_protocol)(struct snd_ump_endpoint *ump);
 };
 
 struct snd_ump_block {

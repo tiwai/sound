@@ -846,6 +846,7 @@ struct snd_ump_block_info {
 /* Additional ioctls for UMP rawmidi devices */
 #define SNDRV_UMP_IOCTL_ENDPOINT_INFO	_IOR('W', 0x40, struct snd_ump_endpoint_info)
 #define SNDRV_UMP_IOCTL_BLOCK_INFO	_IOR('W', 0x41, struct snd_ump_block_info)
+#define SNDRV_UMP_IOCTL_SWITCH_PROTOCOL	_IOR('W', 0x42, unsigned int)
 
 /*
  *  Timer section - /dev/snd/timer

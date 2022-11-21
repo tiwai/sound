@@ -414,6 +414,7 @@ static void seq_ump_client_free(struct seq_ump_client *client)
 	if (client->seq_client >= 0)
 		snd_seq_delete_kernel_client(client->seq_client);
 
+	client->ump->seq_ops = NULL;
 	client->ump->seq_client = NULL;
 
 	kfree(client);
@@ -433,6 +434,19 @@ static void setup_client_midi_version(struct seq_ump_client *client)
 		cptr->midi_version = SNDRV_SEQ_CLIENT_UMP_MIDI_1_0;
 	snd_seq_kernel_client_put(cptr);
 }
+
+/* UMP sequencer ops for switching protocol */
+static int seq_ump_switch_protocol(struct snd_ump_endpoint *ump)
+{
+	if (!ump->seq_client)
+		return -ENODEV;
+	setup_client_midi_version(ump->seq_client);
+	return 0;
+}
+
+static const struct snd_seq_ump_ops seq_ump_ops = {
+	.switch_protocol = seq_ump_switch_protocol,
+};
 
 /* create a sequencer client and ports for the given UMP endpoint */
 static int snd_seq_ump_probe(struct device *_dev)
@@ -485,6 +499,7 @@ static int snd_seq_ump_probe(struct device *_dev)
 	cptr->ump_info = client->ump_info;
 	snd_seq_kernel_client_put(cptr);
 
+	ump->seq_ops = &seq_ump_ops;
 	ump->seq_client = client;
 	return 0;
 

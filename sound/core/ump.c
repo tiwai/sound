@@ -335,6 +335,47 @@ static int snd_ump_ioctl_block(struct snd_ump_endpoint *ump,
 	return 0;
 }
 
+static int seq_notify_protocol(struct snd_ump_endpoint *ump)
+{
+#if IS_ENABLED(CONFIG_SND_SEQUENCER)
+	int err;
+
+	if (ump->seq_ops && ump->seq_ops->switch_protocol) {
+		err = ump->seq_ops->switch_protocol(ump);
+		if (err < 0)
+			return err;
+	}
+#endif /* CONFIG_SND_SEQUENCER */
+	return 0;
+}
+
+static int try_to_switch_protocol(struct snd_ump_endpoint *ump,
+				  unsigned int proto_req);
+
+static int snd_ump_ioctl_switch_protocol(struct snd_ump_endpoint *ump,
+					 unsigned int __user *arg)
+{
+	unsigned int proto;
+	int err;
+
+	if (get_user(proto, arg))
+		return -EFAULT;
+	if (ump->info.version) {
+		err = try_to_switch_protocol(ump, proto);
+		if (err)
+			return err;
+	} else if (ump->info.protocol != proto) {
+		proto &= ump->info.protocol_caps;
+		if (!proto ||
+		    ((proto & SNDRV_UMP_EP_INFO_PROTO_MIDI1) &&
+		     (proto & SNDRV_UMP_EP_INFO_PROTO_MIDI2)))
+			return -EINVAL;
+		ump->info.protocol = proto;
+	}
+
+	return seq_notify_protocol(ump);
+}
+
 /*
  * Handle UMP-specific ioctls; called from snd_rawmidi_ioctl()
  */
@@ -350,6 +391,8 @@ static long snd_ump_ioctl(struct snd_rawmidi *rmidi, unsigned int cmd,
 		return 0;
 	case SNDRV_UMP_IOCTL_BLOCK_INFO:
 		return snd_ump_ioctl_block(ump, argp);
+	case SNDRV_UMP_IOCTL_SWITCH_PROTOCOL:
+		return snd_ump_ioctl_switch_protocol(ump, argp);
 	default:
 		dev_dbg(&rmidi->dev, "rawmidi: unknown command = 0x%x\n", cmd);
 		return -ENOTTY;
