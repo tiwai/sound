@@ -28,6 +28,9 @@ static int snd_ump_rawmidi_close(struct snd_rawmidi_substream *substream);
 static void snd_ump_rawmidi_trigger(struct snd_rawmidi_substream *substream,
 				    int up);
 static void snd_ump_rawmidi_drain(struct snd_rawmidi_substream *substream);
+static void ump_handle_stream_msg(struct snd_ump_endpoint *ump);
+static void snd_ump_watch_input(struct snd_ump_endpoint *ump,
+				const unsigned char *buffer, int count);
 
 static const struct snd_rawmidi_global_ops snd_ump_rawmidi_ops = {
 	.dev_register = snd_ump_dev_register,
@@ -241,6 +244,7 @@ int snd_ump_receive(struct snd_ump_endpoint *ump,
 	struct snd_rawmidi_substream *substream =
 		ump->substreams[SNDRV_RAWMIDI_STREAM_INPUT];
 
+	snd_ump_watch_input(ump, buffer, count);
 	if (!substream)
 		return 0;
 	return snd_rawmidi_receive(substream, buffer, count);
@@ -470,38 +474,22 @@ static unsigned char ump_packet_words[0x10] = {
 	1, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4
 };
 
-/* handle rawmidi input event -- set to rawmidi event callback */
-static void snd_ump_oob_input_event(struct snd_rawmidi_substream *substream)
+static bool snd_ump_parser_feed(struct snd_ump_parser_ctx *ctx, __le32 rawval)
 {
-	struct snd_ump_endpoint *ump = rawmidi_to_ump(substream->rmidi);
-	int size, remaining = 0;
-	__le32 rawval;
-	u32 pack[4], val;
+	u32 val = le32_to_cpu(rawval);
 
-	while (substream->runtime->avail > 0) {
-		if (snd_rawmidi_kernel_read(substream, (unsigned char *)&rawval, 4) != 4)
-			break;
-		val = le32_to_cpu(rawval);
-		if (!remaining) {
-			remaining = ump_packet_words[ump_message_type(val)];
-			size = 0;
-		}
-		pack[size++] = val;
-		if (--remaining)
-			continue;
-		if (ump->oob_response &&
-		    ump->oob_response(ump, pack, size << 2)) {
-			ump->oob_response = NULL;
-			wake_up(&ump->oob_wait);
-		}
+	if (!ctx->remaining) {
+		ctx->remaining = ump_packet_words[ump_message_type(val)];
+		ctx->size = 0;
 	}
+	ctx->pack[ctx->size++] = val;
+	return --ctx->remaining == 0;
 }
 
 /* open / close UMP streams for the internal out-of-bound communication */
 static int ump_request_open(struct snd_ump_endpoint *ump)
 {
 	return snd_rawmidi_kernel_open(&ump->core, 0,
-				       SNDRV_RAWMIDI_LFLG_INPUT |
 				       SNDRV_RAWMIDI_LFLG_OUTPUT,
 				       &ump->oob_rfile);
 }
@@ -519,14 +507,10 @@ static int __ump_req_msg(struct snd_ump_endpoint *ump, u32 req1, u32 req2)
 	memset(buf, 0, sizeof(buf));
 	buf[0] = cpu_to_le32(req1);
 	buf[1] = cpu_to_le32(req2);
-	ump->oob_rfile.input->runtime->event = snd_ump_oob_input_event;
 	snd_rawmidi_kernel_write(ump->oob_rfile.output, (unsigned char *)&buf,
 				 16);
-	/* just trigger the input */
-	snd_rawmidi_kernel_read(ump->oob_rfile.input, NULL, 0);
 	wait_event_timeout(ump->oob_wait, !ump->oob_response,
 			   msecs_to_jiffies(500));
-	ump->oob_rfile.input->runtime->event = NULL;
 	if (ump->oob_response) {
 		ump->oob_response = NULL;
 		return -ETIMEDOUT;
@@ -535,30 +519,33 @@ static int __ump_req_msg(struct snd_ump_endpoint *ump, u32 req1, u32 req2)
 }
 
 /* OOB-response callback for dealing with a single command */
-static int ump_wait_for_cmd(struct snd_ump_endpoint *ump,
-			    const u32 *in_buf, int size)
+static void ump_wait_for_cmd(struct snd_ump_endpoint *ump)
 {
+	const u32 *in_buf = ump->parser.pack;
+	int size = ump->parser.size << 2;
+
 	ump_dbg(ump, "%s: %08x vs wait-for %08x\n",
 		__func__, in_buf[0], ump->oob_wait_for);
 	if (ump->oob_wait_for != (in_buf[0] & 0xffff0000U))
-		return 0;
+		return;
 	memcpy(ump->oob_buf_u32, in_buf, size);
-	return 1;
+	ump->oob_response = NULL;
+	wake_up(&ump->oob_wait);
 }
 
 /* OOB-response callback for dealing with a string from UMP stream msg */
-static int ump_wait_for_string(struct snd_ump_endpoint *ump,
-			       const u32 *in_buf, int size)
+static void ump_wait_for_string(struct snd_ump_endpoint *ump)
 {
+	const u32 *in_buf = ump->parser.pack;
 	int format, offset;
 
 	ump_dbg(ump, "%s: %08x vs wait-for %08x\n",
 		__func__, in_buf[0], ump->oob_wait_for);
 	/* exclude the format bits */
 	if (ump->oob_wait_for != (in_buf[0] & 0xf3ff0000U))
-		return 0;
-	if (size != 16)
-		return 0;
+		return;
+	if (ump->parser.size != 4)
+		return;
 	format = (in_buf[0] >> 26) & 3;
 	if (ump_stream_message_status(in_buf[0]) == UMP_STREAM_MSG_STATUS_FB_NAME)
 		offset = 3;
@@ -570,7 +557,10 @@ static int ump_wait_for_string(struct snd_ump_endpoint *ump,
 				in_buf[offset / 4] >> (3 - (offset % 4)) * 8;
 	}
 
-	return (format == 0 || format == 3);
+	if (format == 0 || format == 3) {
+		ump->oob_response = NULL;
+		wake_up(&ump->oob_wait);
+	}
 }
 
 /* request a command and wait for the given response */
@@ -699,6 +689,27 @@ static unsigned short get_16bit_man_id(u32 src)
 	return val;
 }
 
+/* Extract Function Block info from UMP packet */
+static void fill_fb_info(struct snd_ump_endpoint *ump,
+			 struct snd_ump_block_info *info,
+			 const u32 *buf)
+{
+	info->direction = buf[0] & 3;
+	info->first_group = buf[1] >> 24;
+	info->num_groups = (buf[1] >> 16) & 0xff;
+	info->flags = (buf[0] >> 2) & 3;
+	info->active = (buf[0] >> 15) & 1;
+	info->midi_ci_valid = (buf[1] >> 15) & 1;
+	info->midi_ci_version = (buf[1] >> 8) & 0x7f;
+	info->sysex8_streams = buf[1] & 0xff;
+
+	ump_dbg(ump, "FB %d: dir=%d, active=%d, first_gp=%d, num_gp=%d, midici=%d:%d, sysex8=%d, flags=0x%x\n",
+		info->block_id, info->direction, info->active,
+		info->first_group, info->num_groups,
+		info->midi_ci_valid, info->midi_ci_version,
+		info->sysex8_streams, info->flags);
+}
+
 /**
  * snd_ump_parse_endpoint - parse endpoint and create function blocks
  * @ump: UMP object
@@ -798,18 +809,7 @@ int snd_ump_parse_endpoint(struct snd_ump_endpoint *ump)
 		if (err < 0)
 			goto error;
 
-		fb->info.flags |= (buf[0] >> 2) & 3;
-		fb->info.active = (buf[0] >> 15) & 1;
-		fb->info.midi_ci_valid = (buf[1] >> 15) & 1;
-		fb->info.midi_ci_version = (buf[1] >> 8) & 0x7f;
-		fb->info.sysex8_streams = buf[1] & 0xff;
-
-		ump_dbg(ump, "FB %d: dir=%d, active=%d, first_gp=%d, num_gp=%d, midici=%d:%d, sysex8=%d, flags=0x%x\n",
-			blk,
-			fb->info.direction, fb->info.active,
-			fb->info.first_group, fb->info.num_groups,
-			fb->info.midi_ci_valid, fb->info.midi_ci_version,
-			fb->info.sysex8_streams, fb->info.flags);
+		fill_fb_info(ump, &fb->info, buf);
 
 		err = ump_request_fb_name(ump, blk, fb->info.name,
 					  sizeof(fb->info.name) - 1);
@@ -817,11 +817,65 @@ int snd_ump_parse_endpoint(struct snd_ump_endpoint *ump)
 			ump_dbg(ump, "Unable to get UMP FB name string #%d\n", blk);
 	}
 
+	/* start watching FB info changes */
+	ump->oob_response = ump_handle_stream_msg;
+
  error:
 	ump_request_close(ump);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_ump_parse_endpoint);
+
+/* OOB handling of dynamic FB info update */
+static void ump_handle_stream_msg(struct snd_ump_endpoint *ump)
+{
+	struct snd_ump_block *fb;
+	struct snd_ump_block_info *info;
+	const u32 *buf = ump->parser.pack;
+	unsigned int blk;
+	char tmpbuf[offsetof(struct snd_ump_block_info, name)];
+
+	if (ump_message_type(*buf) != UMP_MSG_TYPE_UMP_STREAM ||
+	    ump_stream_message_status(*buf) != UMP_STREAM_MSG_STATUS_FB_INFO)
+		return;
+
+	blk = (buf[0] >> 8) & 0x1f;
+	fb = snd_ump_get_block(ump, blk);
+	if (!fb) {
+		/* FIXME: create new? */
+		ump_info(ump, "Function Block Info Update for non-existing block %d\n",
+			 blk);
+		return;
+	}
+
+	/* check the FB info update */
+	info = (struct snd_ump_block_info *)tmpbuf;
+	fill_fb_info(ump, info, buf);
+	if (!memcmp(&fb->info, tmpbuf, sizeof(tmpbuf)))
+		return; /* no content change */
+
+	/* update the actual FB info */
+	memcpy(&fb->info, tmpbuf, sizeof(tmpbuf));
+
+	/* unlike other OOB handling, this keeps oob_response */
+}
+
+/* Snoop UMP messages and process internally for OOB handling */
+static void snd_ump_watch_input(struct snd_ump_endpoint *ump,
+				const unsigned char *buffer, int count)
+{
+	const __le32 *buf;
+
+	if (!count || !buffer)
+		return;
+	count >>= 2;
+	buf = (const __le32 *)buffer;
+	for (; count > 0; count--, buf++) {
+		if (snd_ump_parser_feed(&ump->parser, *buf))
+			if (ump->oob_response)
+				ump->oob_response(ump);
+	}
+}
 
 MODULE_DESCRIPTION("Universal MIDI Packet (UMP) Core Driver");
 MODULE_LICENSE("GPL");

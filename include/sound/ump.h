@@ -11,6 +11,12 @@ struct snd_ump_endpoint;
 struct snd_ump_block;
 struct snd_ump_ops;
 
+struct snd_ump_parser_ctx {
+	int size;
+	int remaining;
+	u32 pack[4];
+};
+
 struct snd_ump_endpoint {
 	struct snd_rawmidi core;	/* raw UMP access */
 
@@ -23,6 +29,7 @@ struct snd_ump_endpoint {
 	void (*private_free)(struct snd_ump_endpoint *ump);
 
 	/* out-of-bound command processing */
+	struct snd_ump_parser_ctx parser;
 	u32 oob_wait_for;
 	union {
 		u32 *oob_buf_u32;
@@ -30,7 +37,7 @@ struct snd_ump_endpoint {
 	};
 	int oob_size, oob_maxsize;
 	wait_queue_head_t oob_wait;
-	int (*oob_response)(struct snd_ump_endpoint *ump, const u32 *pack, int size);
+	void (*oob_response)(struct snd_ump_endpoint *ump);
 	struct snd_rawmidi_file oob_rfile;
 
 	struct list_head fb_list;	/* list of snd_ump_block objects */
