@@ -52,7 +52,8 @@ struct snd_usb_midi2_endpoint {
 	struct usb_device *dev;
 	const struct usb_ms20_endpoint_descriptor *ms_ep; /* reference to EP descriptor */
 	struct snd_usb_midi2_endpoint *pair;	/* bidirectional pair EP */
-	struct snd_usb_midi2_ump *rmidi;	/* assigned UMP EP */
+	struct snd_usb_midi2_ump *rmidi;	/* assigned UMP EP pair */
+	struct snd_ump_endpoint *ump;		/* assigned UMP EP */
 	int direction;			/* direction (STR_IN/OUT) */
 	unsigned int endpoint;		/* EP number */
 	unsigned int pipe;		/* URB pipe */
@@ -133,12 +134,8 @@ static int prepare_output_urb(struct snd_usb_midi2_endpoint *ep,
 {
 	int count;
 
-	if (ep->substream)
-		count = snd_rawmidi_transmit(ep->substream,
-					     urb->transfer_buffer,
-					     ep->packets);
-	else
-		count = -ENODEV;
+	count = snd_ump_transmit(ep->ump, urb->transfer_buffer,
+				 ep->packets);
 	if (count < 0) {
 		dev_dbg(&ep->dev->dev, "rawmidi transmit error %d\n", count);
 		return count;
@@ -190,14 +187,14 @@ static void input_urb_complete(struct urb *urb)
 	int len;
 
 	spin_lock_irqsave(&ep->lock, flags);
-	if (ep->disconnected || urb->status < 0 || !atomic_read(&ep->running))
+	if (ep->disconnected || urb->status < 0)
 		goto dequeue;
 	len = urb->actual_length;
 	len &= ~3; /* align UMP */
 	if (len > ep->packets)
 		len = ep->packets;
-	if (len > 0 && ep->substream)
-		snd_rawmidi_receive(ep->substream, urb->transfer_buffer, len);
+	if (len > 0)
+		snd_ump_receive(ep->ump, urb->transfer_buffer, len);
  dequeue:
 	set_bit(ctx->index, &ep->urb_free);
 	submit_input_urbs_locked(ep);
@@ -327,68 +324,58 @@ static int alloc_midi_urbs(struct snd_usb_midi2_endpoint *ep)
 }
 
 static struct snd_usb_midi2_endpoint *
-substream_to_endpoint(struct snd_rawmidi_substream *substream)
+ump_to_endpoint(struct snd_ump_endpoint *ump, int dir)
 {
-	struct snd_ump_endpoint *ump = rawmidi_to_ump(substream->rmidi);
 	struct snd_usb_midi2_ump *rmidi = ump->private_data;
 
-	return rmidi->eps[substream->stream];
+	return rmidi->eps[dir];
 }
 
-/* rawmidi open callback */
-static int snd_usb_midi_v2_open(struct snd_rawmidi_substream *substream)
+/* ump open callback */
+static int snd_usb_midi_v2_open(struct snd_ump_endpoint *ump, int dir)
 {
-	struct snd_usb_midi2_endpoint *ep = substream_to_endpoint(substream);
+	struct snd_usb_midi2_endpoint *ep = ump_to_endpoint(ump, dir);
 	int err = 0;
 
 	if (!ep || !ep->endpoint)
 		return -ENODEV;
 	if (ep->disconnected)
 		return -EIO;
-	if (ep->substream)
-		return -EBUSY;
 	if (ep->direction == STR_OUT) {
 		err = alloc_midi_urbs(ep);
 		if (err)
 			return err;
 	}
-	spin_lock_irq(&ep->lock);
-	ep->substream = substream;
-	spin_unlock_irq(&ep->lock);
 	return 0;
 }
 
-/* rawmidi close callback */
-static int snd_usb_midi_v2_close(struct snd_rawmidi_substream *substream)
+/* ump close callback */
+static void snd_usb_midi_v2_close(struct snd_ump_endpoint *ump, int dir)
 {
-	struct snd_usb_midi2_endpoint *ep = substream_to_endpoint(substream);
+	struct snd_usb_midi2_endpoint *ep = ump_to_endpoint(ump, dir);
 
-	spin_lock_irq(&ep->lock);
-	ep->substream = NULL;
-	spin_unlock_irq(&ep->lock);
 	if (ep->direction == STR_OUT) {
 		kill_midi_urbs(ep, false);
 		drain_urb_queue(ep);
 		free_midi_urbs(ep);
 	}
-	return 0;
 }
 
-/* rawmidi trigger callback */
-static void snd_usb_midi_v2_trigger(struct snd_rawmidi_substream *substream,
+/* ump trigger callback */
+static void snd_usb_midi_v2_trigger(struct snd_ump_endpoint *ump, int dir,
 				    int up)
 {
-	struct snd_usb_midi2_endpoint *ep = substream_to_endpoint(substream);
+	struct snd_usb_midi2_endpoint *ep = ump_to_endpoint(ump, dir);
 
 	atomic_set(&ep->running, up);
 	if (up && ep->direction == STR_OUT && !ep->disconnected)
 		submit_io_urbs(ep);
 }
 
-/* rawmidi drain callback */
-static void snd_usb_midi_v2_drain(struct snd_rawmidi_substream *substream)
+/* ump drain callback */
+static void snd_usb_midi_v2_drain(struct snd_ump_endpoint *ump, int dir)
 {
-	struct snd_usb_midi2_endpoint *ep = substream_to_endpoint(substream);
+	struct snd_usb_midi2_endpoint *ep = ump_to_endpoint(ump, dir);
 
 	drain_urb_queue(ep);
 }
@@ -423,17 +410,11 @@ static int start_input_streams(struct snd_usb_midi2_interface *umidi)
 	return err;
 }
 
-static const struct snd_rawmidi_ops output_ops = {
+static const struct snd_ump_ops snd_usb_midi_v2_ump_ops = {
 	.open = snd_usb_midi_v2_open,
 	.close = snd_usb_midi_v2_close,
 	.trigger = snd_usb_midi_v2_trigger,
 	.drain = snd_usb_midi_v2_drain,
-};
-
-static const struct snd_rawmidi_ops input_ops = {
-	.open = snd_usb_midi_v2_open,
-	.close = snd_usb_midi_v2_close,
-	.trigger = snd_usb_midi_v2_trigger,
 };
 
 /* create a USB MIDI 2.0 endpoint object */
@@ -727,23 +708,19 @@ static int create_midi2_ump(struct snd_usb_midi2_interface *umidi,
 
 	ump->info.flags = SNDRV_UMP_EP_INFO_LITTLE_ENDIAN;
 	ump->private_data = rmidi;
-
-	if (input)
-		snd_rawmidi_set_ops(&ump->core, SNDRV_RAWMIDI_STREAM_INPUT,
-				    &input_ops);
-	if (output)
-		snd_rawmidi_set_ops(&ump->core, SNDRV_RAWMIDI_STREAM_OUTPUT,
-				    &output_ops);
+	ump->ops = &snd_usb_midi_v2_ump_ops;
 
 	rmidi->eps[STR_IN] = ep_in;
 	rmidi->eps[STR_OUT] = ep_out;
 	if (ep_in) {
 		ep_in->pair = ep_out;
 		ep_in->rmidi = rmidi;
+		ep_in->ump = ump;
 	}
 	if (ep_out) {
 		ep_out->pair = ep_in;
 		ep_out->rmidi = rmidi;
+		ep_out->ump = ump;
 	}
 
 	list_add_tail(&rmidi->list, &umidi->rawmidi_list);
@@ -1114,7 +1091,7 @@ void snd_usb_midi_v2_suspend_all(struct snd_usb_audio *chip)
 static void resume_midi2_endpoint(struct snd_usb_midi2_endpoint *ep)
 {
 	ep->running = ep->suspended;
-	if (ep->direction == STR_IN || atomic_read(&ep->running))
+	if (ep->direction == STR_IN)
 		submit_io_urbs(ep);
 	/* FIXME: does it all? */
 }

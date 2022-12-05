@@ -9,11 +9,15 @@
 
 struct snd_ump_endpoint;
 struct snd_ump_block;
+struct snd_ump_ops;
 
 struct snd_ump_endpoint {
 	struct snd_rawmidi core;	/* raw UMP access */
 
 	struct snd_ump_endpoint_info info;
+
+	const struct snd_ump_ops *ops;	/* UMP ops set by the driver */
+	struct snd_rawmidi_substream *substreams[2];	/* opened substreams */
 
 	void *private_data;
 	void (*private_free)(struct snd_ump_endpoint *ump);
@@ -24,6 +28,14 @@ struct snd_ump_endpoint {
 	struct snd_seq_device *seq_dev;
 	void *seq_client;
 #endif
+};
+
+/* ops filled by UMP drivers */
+struct snd_ump_ops {
+	int (*open)(struct snd_ump_endpoint *ump, int dir);
+	void (*close)(struct snd_ump_endpoint *ump, int dir);
+	void (*trigger)(struct snd_ump_endpoint *ump, int dir, int up);
+	void (*drain)(struct snd_ump_endpoint *ump, int dir);
 };
 
 struct snd_ump_block {
@@ -44,6 +56,10 @@ int snd_ump_endpoint_new(struct snd_card *card, char *id, int device,
 int snd_ump_block_new(struct snd_ump_endpoint *ump, unsigned int blk,
 		      unsigned int direction, unsigned int first_group,
 		      unsigned int num_groups, struct snd_ump_block **fb_ret);
+int snd_ump_receive(struct snd_ump_endpoint *ump,
+		    const unsigned char *buffer, int count);
+int snd_ump_transmit(struct snd_ump_endpoint *ump,
+		     unsigned char *buffer, int count);
 
 /*
  * Some definitions for UMP
