@@ -377,6 +377,13 @@ static void snd_ump_proc_read(struct snd_info_entry *entry,
 	snd_iprintf(buffer, "UMP Version: 0x%04x\n", ump->info.version);
 	snd_iprintf(buffer, "Protocol Caps: 0x%08x\n", ump->info.protocol_caps);
 	snd_iprintf(buffer, "Protocol: 0x%08x\n", ump->info.protocol);
+	if (ump->info.version) {
+		snd_iprintf(buffer, "Manufacturer ID: 0x%04x\n",
+			    ump->info.manufacturer_id);
+		snd_iprintf(buffer, "Family ID: 0x%04x\n", ump->info.family_id);
+		snd_iprintf(buffer, "Model ID: 0x%04x\n", ump->info.model_id);
+		snd_iprintf(buffer, "SW Revision: 0x%x\n", ump->info.sw_revision);
+	}
 	snd_iprintf(buffer, "Num Blocks: %d\n\n", ump->info.num_blocks);
 
 	list_for_each_entry(fb, &ump->fb_list, list) {
@@ -392,6 +399,15 @@ static void snd_ump_proc_read(struct snd_info_entry *entry,
 		snd_iprintf(buffer, "  Is MIDI1: %s%s\n",
 			    (fb->info.flags & SNDRV_UMP_BLOCK_IS_MIDI1) ? "Yes" : "No",
 			    (fb->info.flags & SNDRV_UMP_BLOCK_IS_LOWSPEED) ? " (Low Speed)" : "");
+		if (ump->info.version) {
+			snd_iprintf(buffer, "  MIDI-CI Valid: %s\n",
+				    fb->info.midi_ci_valid ? "Yes" : "No");
+			if (fb->info.midi_ci_valid)
+				snd_iprintf(buffer, "  MIDI-CI Version: %d\n",
+					    fb->info.midi_ci_version);
+			snd_iprintf(buffer, "  Sysex8 Streams: %d\n",
+				    fb->info.sysex8_streams);
+		}
 		snd_iprintf(buffer, "\n");
 	}
 }

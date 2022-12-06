@@ -797,7 +797,10 @@ struct snd_ump_endpoint_info {
 	unsigned int protocol;		/* current protocol */
 	unsigned int num_blocks;	/* # of function blocks */
 	unsigned short version;		/* UMP major/minor version */
-	unsigned short padding[5];
+	unsigned short manufacturer_id;	/* MIDI manufacturer ID */
+	unsigned short family_id;	/* MIDI device family ID */
+	unsigned short model_id;	/* MIDI family model ID */
+	unsigned int sw_revision;	/* software revision */
 	unsigned char name[128];	/* endpoint name string */
 	unsigned char product_id[128];	/* product id string */
 	unsigned char reserved[32];
@@ -825,7 +828,9 @@ struct snd_ump_block_info {
 	unsigned char active;		/* Activeness */
 	unsigned char first_group;	/* first group ID */
 	unsigned char num_groups;	/* number of groups */
-	unsigned char padding[3];
+	unsigned char midi_ci_valid;	/* MIDI-CI validity */
+	unsigned char midi_ci_version;	/* MIDI-CI support version */
+	unsigned char sysex8_streams;	/* max number of sysex8 streams */
 	unsigned int flags;		/* various info flags */
 	unsigned char name[128];	/* block name string */
 	unsigned char reserved[32];
