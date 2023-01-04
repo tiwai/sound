@@ -69,11 +69,15 @@ struct snd_seq_client_port *snd_seq_port_query_nearest(struct snd_seq_client *cl
 {
 	int num;
 	struct snd_seq_client_port *port, *found;
+	bool check_disabled = (pinfo->capability & SNDRV_SEQ_PORT_CAP_DISABLED);
 
 	num = pinfo->addr.port;
 	found = NULL;
 	read_lock(&client->ports_lock);
 	list_for_each_entry(port, &client->ports_list_head, list) {
+		if ((port->capability & SNDRV_SEQ_PORT_CAP_DISABLED) &&
+		    !check_disabled)
+			continue; /* skip disabled ports */
 		if (port->addr.port < num)
 			continue;
 		if (port->addr.port == num) {

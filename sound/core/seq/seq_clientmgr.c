@@ -616,6 +616,11 @@ static int snd_seq_deliver_single_event(struct snd_seq_client *client,
 	if (dest_port == NULL)
 		goto __skip;
 
+	if (dest_port->capability & SNDRV_SEQ_PORT_CAP_DISABLED) {
+		result = 0;
+		goto __skip;
+	}
+
 	/* check permission */
 	if (! check_port_perm(dest_port, SNDRV_SEQ_PORT_CAP_WRITE)) {
 		result = -EPERM;
@@ -672,6 +677,9 @@ static int deliver_to_subscribers(struct snd_seq_client *client,
 	src_port = snd_seq_port_use_ptr(client, event->source.port);
 	if (src_port == NULL)
 		return -EINVAL; /* invalid source port */
+	if (src_port->capability & SNDRV_SEQ_PORT_CAP_DISABLED)
+		goto unlock;
+
 	/* save original event record */
 	event_saved = *event;
 	grp = &src_port->c_src;
@@ -707,6 +715,7 @@ static int deliver_to_subscribers(struct snd_seq_client *client,
 	else
 		up_read(&grp->list_mutex);
 	*event = event_saved; /* restore */
+ unlock:
 	snd_seq_port_unlock(src_port);
 	return (result < 0) ? result : num_ev;
 }
@@ -2354,6 +2363,8 @@ static void snd_seq_info_dump_ports(struct snd_info_buffer *buffer,
 
 	mutex_lock(&client->ports_mutex);
 	list_for_each_entry(p, &client->ports_list_head, list) {
+		if (p->capability & SNDRV_SEQ_PORT_CAP_DISABLED)
+			continue;
 		snd_iprintf(buffer, "  Port %3d : \"%s\" (%c%c%c%c)\n",
 			    p->addr.port, p->name,
 			    FLAG_PERM_RD(p->capability),
