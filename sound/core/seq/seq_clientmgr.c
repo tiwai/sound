@@ -239,6 +239,7 @@ static struct snd_seq_client *seq_create_client1(int client_index, int poolsize)
 	mutex_init(&client->ports_mutex);
 	INIT_LIST_HEAD(&client->ports_list_head);
 	mutex_init(&client->ioctl_mutex);
+	client->broadcast_port = -1;
 
 	/* find free slot in the client table */
 	spin_lock_irq(&clients_lock);
@@ -664,21 +665,18 @@ static int snd_seq_deliver_single_event(struct snd_seq_client *client,
 /*
  * send the event to all subscribers:
  */
-static int deliver_to_subscribers(struct snd_seq_client *client,
-				  struct snd_seq_event *event,
-				  int atomic, int hop)
+static int __deliver_to_subscribers(struct snd_seq_client *client,
+				    struct snd_seq_event *event,
+				    struct snd_seq_client_port *src_port,
+				    int atomic, int hop)
 {
 	struct snd_seq_subscribers *subs;
 	int err, result = 0, num_ev = 0;
 	struct snd_seq_event event_saved;
-	struct snd_seq_client_port *src_port;
 	struct snd_seq_port_subs_info *grp;
 
-	src_port = snd_seq_port_use_ptr(client, event->source.port);
-	if (src_port == NULL)
-		return -EINVAL; /* invalid source port */
 	if (src_port->capability & SNDRV_SEQ_PORT_CAP_DISABLED)
-		goto unlock;
+		return 0;
 
 	/* save original event record */
 	event_saved = *event;
@@ -715,9 +713,32 @@ static int deliver_to_subscribers(struct snd_seq_client *client,
 	else
 		up_read(&grp->list_mutex);
 	*event = event_saved; /* restore */
- unlock:
-	snd_seq_port_unlock(src_port);
 	return (result < 0) ? result : num_ev;
+}
+
+static int deliver_to_subscribers(struct snd_seq_client *client,
+				  struct snd_seq_event *event,
+				  int atomic, int hop)
+{
+	struct snd_seq_client_port *src_port;
+	int ret = 0, ret2;
+
+	src_port = snd_seq_port_use_ptr(client, event->source.port);
+	if (src_port) {
+		ret = __deliver_to_subscribers(client, event, src_port, atomic, hop);
+		snd_seq_port_unlock(src_port);
+	}
+
+	if (client->broadcast_port < 0 ||
+	    event->source.port == client->broadcast_port)
+		return ret;
+
+	src_port = snd_seq_port_use_ptr(client, client->broadcast_port);
+	if (!src_port)
+		return ret;
+	ret2 = __deliver_to_subscribers(client, event, src_port, atomic, hop);
+	snd_seq_port_unlock(src_port);
+	return ret2 < 0 ? ret2 : ret;
 }
 
 /* deliver an event to the destination port(s).
@@ -1210,6 +1231,9 @@ static int snd_seq_ioctl_create_port(struct snd_seq_client *client, void *arg)
 		return -EPERM;
 	if (client->type == USER_CLIENT && info->kernel)
 		return -EINVAL;
+	if ((info->capability & SNDRV_SEQ_PORT_CAP_BROADCAST) &&
+	    client->broadcast_port >= 0)
+		return -EBUSY;
 
 	if (info->flags & SNDRV_SEQ_PORT_FLG_GIVEN_PORT)
 		port_idx = info->addr.port;
@@ -1237,6 +1261,8 @@ static int snd_seq_ioctl_create_port(struct snd_seq_client *client, void *arg)
 	info->addr = port->addr;
 
 	snd_seq_set_port_info(port, info);
+	if (info->capability & SNDRV_SEQ_PORT_CAP_BROADCAST)
+		client->broadcast_port = port->addr.port;
 	snd_seq_system_client_ev_port_start(port->addr.client, port->addr.port);
 	snd_seq_port_unlock(port);
 
@@ -1256,8 +1282,11 @@ static int snd_seq_ioctl_delete_port(struct snd_seq_client *client, void *arg)
 		return -EPERM;
 
 	err = snd_seq_delete_port(client, info->addr.port);
-	if (err >= 0)
+	if (err >= 0) {
+		if (client->broadcast_port == info->addr.port)
+			client->broadcast_port = -1;
 		snd_seq_system_client_ev_port_exit(client->number, info->addr.port);
+	}
 	return err;
 }
 

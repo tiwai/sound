@@ -48,6 +48,7 @@ struct snd_seq_client {
 	struct mutex ports_mutex;
 	struct mutex ioctl_mutex;
 	int convert32;		/* convert 32->64bit */
+	int broadcast_port;
 
 	/* output pool */
 	struct snd_seq_pool *pool;		/* memory pool for this client */

@@ -407,6 +407,7 @@ struct snd_seq_remove_events {
 #define SNDRV_SEQ_PORT_CAP_SUBS_WRITE	(1<<6)	/* allow write subscription */
 #define SNDRV_SEQ_PORT_CAP_NO_EXPORT	(1<<7)	/* routing not allowed */
 #define SNDRV_SEQ_PORT_CAP_DISABLED	(1<<8)	/* disabled port */
+#define SNDRV_SEQ_PORT_CAP_BROADCAST	(1<<9)	/* broadcast port */
 
 	/* port type */
 #define SNDRV_SEQ_PORT_TYPE_SPECIFIC	(1<<0)	/* hardware specific */
