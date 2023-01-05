@@ -723,14 +723,27 @@ static int deliver_to_subscribers(struct snd_seq_client *client,
 	struct snd_seq_client_port *src_port;
 	int ret = 0, ret2;
 
+	/* broadcast to all ports */
+	if (client->broadcast_port >= 0 &&
+	    event->source.port == client->broadcast_port) {
+		read_lock(&client->ports_lock);
+		list_for_each_entry(src_port, &client->ports_list_head, list) {
+			ret2 = __deliver_to_subscribers(client, event, src_port,
+							true, hop);
+			if (ret2 < 0)
+				ret = ret2;
+		}
+		read_unlock(&client->ports_lock);
+		return ret;
+	}
+
 	src_port = snd_seq_port_use_ptr(client, event->source.port);
 	if (src_port) {
 		ret = __deliver_to_subscribers(client, event, src_port, atomic, hop);
 		snd_seq_port_unlock(src_port);
 	}
 
-	if (client->broadcast_port < 0 ||
-	    event->source.port == client->broadcast_port)
+	if (client->broadcast_port < 0)
 		return ret;
 
 	src_port = snd_seq_port_use_ptr(client, client->broadcast_port);
