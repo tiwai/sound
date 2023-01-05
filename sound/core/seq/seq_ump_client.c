@@ -47,6 +47,9 @@ struct seq_ump_client {
 	void *ump_info[SNDRV_UMP_MAX_BLOCKS + 1]; /* shadow of seq client ump_info */
 };
 
+#define is_groupless_msg(type) \
+	((type) == UMP_MSG_TYPE_UTILITY || (type) == UMP_MSG_TYPE_UMP_STREAM)
+
 /* number of 32bit words for each UMP message type */
 static unsigned char ump_packet_words[0x10] = {
 	1, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4
@@ -64,6 +67,9 @@ static bool seq_ump_encode_event(struct seq_ump_input_buffer *input,
 		input->pending = ump_packet_words[ump_message_type(val)];
 		input->type = ump_message_type(val);
 		input->group = ump_message_group(val);
+		/* broadcast groupless messages */
+		if (is_groupless_msg(input->type))
+			input->group = SNDRV_UMP_MAX_GROUPS;
 	}
 
 	input->buf[input->len++] = cpu_to_le32(val);
@@ -165,6 +171,7 @@ static int seq_ump_process_event(struct snd_seq_event *ev, int direct,
 	}
 
 	if (ev->dest.port == SNDRV_UMP_MAX_GROUPS /* broadcast port */ ||
+	    is_groupless_msg(type) ||
 	    group == ev->dest.port) {
 		/* copy as is */
 		snd_rawmidi_kernel_write(substream, data, len);
