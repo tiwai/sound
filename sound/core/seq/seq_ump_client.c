@@ -163,7 +163,8 @@ static int seq_ump_process_event(struct snd_seq_event *ev, int direct,
 		data = packs.d8;
 	}
 
-	if (group == ev->dest.port) {
+	if (ev->dest.port == SNDRV_UMP_MAX_GROUPS /* broadcast port */ ||
+	    group == ev->dest.port) {
 		/* copy as is */
 		snd_rawmidi_kernel_write(substream, data, len);
 		return 0;
@@ -357,6 +358,55 @@ static void update_group_attrs(struct seq_ump_client *client)
 	}
 }
 
+/* create a client-broadcast port (that corresponds to a UMP EP) */
+static int create_broadcast_port(struct seq_ump_client *client)
+{
+	struct snd_seq_port_info *port;
+	struct snd_seq_port_callback pcallbacks;
+	int err;
+
+	if (!(client->ump->core.info_flags & SNDRV_RAWMIDI_INFO_INPUT))
+		return 0;
+
+	port = kzalloc(sizeof(*port), GFP_KERNEL);
+	if (!port)
+		return -ENOMEM;
+
+	port->addr.client = client->seq_client;
+	port->addr.port = SNDRV_UMP_MAX_GROUPS;
+	port->flags = SNDRV_SEQ_PORT_FLG_GIVEN_PORT;
+	port->capability = SNDRV_SEQ_PORT_CAP_READ |
+		SNDRV_SEQ_PORT_CAP_SYNC_READ |
+		SNDRV_SEQ_PORT_CAP_SUBS_READ |
+		SNDRV_SEQ_PORT_CAP_BROADCAST;
+	if (client->ump->core.info_flags & SNDRV_RAWMIDI_INFO_OUTPUT)
+		port->capability |= SNDRV_SEQ_PORT_CAP_WRITE |
+			SNDRV_SEQ_PORT_CAP_SYNC_WRITE |
+			SNDRV_SEQ_PORT_CAP_SUBS_WRITE |
+			SNDRV_SEQ_PORT_CAP_DUPLEX;
+	port->type = SNDRV_SEQ_PORT_TYPE_MIDI_UMP |
+		SNDRV_SEQ_PORT_TYPE_HARDWARE |
+		SNDRV_SEQ_PORT_TYPE_PORT;
+	port->midi_channels = 16;
+	strcpy(port->name, "UMP Endpoint");
+	memset(&pcallbacks, 0, sizeof(pcallbacks));
+	pcallbacks.owner = THIS_MODULE;
+	pcallbacks.private_data = client;
+	pcallbacks.subscribe = seq_ump_subscribe;
+	pcallbacks.unsubscribe = seq_ump_unsubscribe;
+	if (client->ump->core.info_flags & SNDRV_RAWMIDI_INFO_OUTPUT) {
+		pcallbacks.use = seq_ump_use;
+		pcallbacks.unuse = seq_ump_unuse;
+		pcallbacks.event_input = seq_ump_process_event;
+	}
+	port->kernel = &pcallbacks;
+	err = snd_seq_kernel_client_ctl(client->seq_client,
+					SNDRV_SEQ_IOCTL_CREATE_PORT,
+					port);
+	kfree(port);
+	return err;
+}
+
 /* release the client resources */
 static void seq_ump_client_free(struct seq_ump_client *client)
 {
@@ -415,6 +465,10 @@ static int snd_seq_ump_probe(struct device *_dev)
 		if (err < 0)
 			goto error;
 	}
+
+	err = create_broadcast_port(client);
+	if (err < 0)
+		goto error;
 
 	ump->seq_client = client;
 	return 0;
