@@ -60,6 +60,8 @@ struct snd_ump_ops {
 /* ops filled by sequencer binding */
 struct snd_seq_ump_ops {
 	int (*switch_protocol)(struct snd_ump_endpoint *ump);
+	int (*notify_fb_change)(struct snd_ump_endpoint *ump,
+				struct snd_ump_block *fb);
 };
 
 struct snd_ump_block {

@@ -857,6 +857,12 @@ static void ump_handle_stream_msg(struct snd_ump_endpoint *ump)
 	/* update the actual FB info */
 	memcpy(&fb->info, tmpbuf, sizeof(tmpbuf));
 
+#if IS_ENABLED(CONFIG_SND_SEQUENCER)
+	/* update sequencer clients accordingly */
+	if (ump->seq_ops && ump->seq_ops->notify_fb_change)
+		ump->seq_ops->notify_fb_change(ump, fb);
+#endif
+
 	/* unlike other OOB handling, this keeps oob_response */
 }
 
