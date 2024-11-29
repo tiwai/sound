@@ -1089,6 +1089,10 @@ static int snd_ump_legacy_open(struct snd_rawmidi_substream *substream)
 		err = -EBUSY;
 		goto unlock;
 	}
+	if (!ump->groups[group].active) {
+		err = -ENODEV;
+		goto unlock;
+	}
 	if (dir == SNDRV_RAWMIDI_STREAM_OUTPUT) {
 		if (!ump->legacy_out_opens) {
 			err = snd_rawmidi_kernel_open(&ump->core, 0,
