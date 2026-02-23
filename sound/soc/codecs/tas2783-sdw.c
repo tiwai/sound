@@ -733,8 +733,8 @@ static void tas2783_fw_ready(const struct firmware *fmw, void *context)
 	s32  img_sz, ret = 0, cur_file = 0;
 	s32 offset = 0;
 
-	struct tas_fw_hdr *hdr __free(kfree) = kzalloc(sizeof(*hdr), GFP_KERNEL);
-	struct tas_fw_file *file __free(kfree) = kzalloc(sizeof(*file), GFP_KERNEL);
+	struct tas_fw_hdr *hdr __free(kfree) = kzalloc_obj(*hdr);
+	struct tas_fw_file *file __free(kfree) = kzalloc_obj(*file);
 	if (!file || !hdr) {
 		ret = -ENOMEM;
 		goto out;
@@ -1342,7 +1342,7 @@ static s32 tas_sdw_probe(struct sdw_slave *peripheral,
 	return tas_init(tas_dev);
 }
 
-static s32 tas_sdw_remove(struct sdw_slave *peripheral)
+static void tas_sdw_remove(struct sdw_slave *peripheral)
 {
 	struct tas2783_prv *tas_dev = dev_get_drvdata(&peripheral->dev);
 
@@ -1351,8 +1351,6 @@ static s32 tas_sdw_remove(struct sdw_slave *peripheral)
 	mutex_destroy(&tas_dev->calib_lock);
 	mutex_destroy(&tas_dev->pde_lock);
 	dev_set_drvdata(&peripheral->dev, NULL);
-
-	return 0;
 }
 
 static const struct sdw_device_id tas_sdw_id[] = {
