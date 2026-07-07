@@ -395,15 +395,21 @@ int __init snd_minor_info_init(void)
 
 static int __init alsa_sound_init(void)
 {
+	int err;
+
 	snd_major = major;
 	snd_ecards_limit = cards_limit;
-	if (register_chrdev(major, "alsa", &snd_fops)) {
+
+	err = register_chrdev(major, "alsa", &snd_fops);
+	if (err < 0) {
 		pr_err("ALSA core: unable to register native major device number %d\n", major);
-		return -EIO;
+		return err;
 	}
-	if (snd_info_init() < 0) {
+
+	err = snd_info_init();
+	if (err < 0) {
 		unregister_chrdev(major, "alsa");
-		return -ENOMEM;
+		return err;
 	}
 
 #ifdef CONFIG_SND_DEBUG

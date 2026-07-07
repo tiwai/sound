@@ -296,11 +296,8 @@ static int snd_seq_open(struct inode *inode, struct file *file)
 	int c, mode;			/* client id */
 	struct snd_seq_client *client;
 	struct snd_seq_user_client *user;
-	int err;
 
-	err = stream_open(inode, file);
-	if (err < 0)
-		return err;
+	stream_open(inode, file);
 
 	scoped_guard(mutex, &register_mutex) {
 		client = seq_create_client1(-1, SNDRV_SEQ_DEFAULT_EVENTS);

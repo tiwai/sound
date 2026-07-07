@@ -719,7 +719,7 @@ int snd_hdac_bus_alloc_stream_pages(struct hdac_bus *bus)
 					  BDL_SIZE, &s->bdl);
 		num_streams++;
 		if (err < 0)
-			return -ENOMEM;
+			goto error_bdl;
 	}
 
 	if (WARN_ON(!num_streams))
@@ -728,12 +728,24 @@ int snd_hdac_bus_alloc_stream_pages(struct hdac_bus *bus)
 	err = snd_dma_alloc_pages(dma_type, bus->dev,
 				  num_streams * 8, &bus->posbuf);
 	if (err < 0)
-		return -ENOMEM;
+		goto error_bdl;
 	list_for_each_entry(s, &bus->stream_list, list)
 		s->posbuf = (__le32 *)(bus->posbuf.area + s->index * 8);
 
 	/* single page (at least 4096 bytes) must suffice for both ringbuffes */
-	return snd_dma_alloc_pages(dma_type, bus->dev, PAGE_SIZE, &bus->rb);
+	err = snd_dma_alloc_pages(dma_type, bus->dev, PAGE_SIZE, &bus->rb);
+	if (err < 0)
+		goto error_posbuf;
+	return 0;
+
+error_posbuf:
+	snd_dma_free_pages(&bus->posbuf);
+error_bdl:
+	list_for_each_entry(s, &bus->stream_list, list) {
+		if (s->bdl.area)
+			snd_dma_free_pages(&s->bdl);
+	}
+	return -ENOMEM;
 }
 EXPORT_SYMBOL_GPL(snd_hdac_bus_alloc_stream_pages);
 

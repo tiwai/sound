@@ -55,9 +55,7 @@ static int snd_ctl_open(struct inode *inode, struct file *file)
 	struct snd_ctl_file *ctl;
 	int i, err;
 
-	err = stream_open(inode, file);
-	if (err < 0)
-		return err;
+	stream_open(inode, file);
 
 	card = snd_lookup_minor_data(iminor(inode), SNDRV_DEVICE_TYPE_CONTROL);
 	if (!card) {

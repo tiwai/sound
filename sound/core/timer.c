@@ -1531,11 +1531,8 @@ static int realloc_user_queue(struct snd_timer_user *tu, int size)
 static int snd_timer_user_open(struct inode *inode, struct file *file)
 {
 	struct snd_timer_user *tu;
-	int err;
 
-	err = stream_open(inode, file);
-	if (err < 0)
-		return err;
+	stream_open(inode, file);
 
 	tu = kzalloc_obj(*tu);
 	if (tu == NULL)

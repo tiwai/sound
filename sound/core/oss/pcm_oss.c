@@ -2495,9 +2495,7 @@ static int snd_pcm_oss_open(struct inode *inode, struct file *file)
 	int nonblock;
 	wait_queue_entry_t wait;
 
-	err = nonseekable_open(inode, file);
-	if (err < 0)
-		return err;
+	nonseekable_open(inode, file);
 
 	pcm = snd_lookup_oss_minor_data(iminor(inode),
 					SNDRV_OSS_DEVICE_TYPE_PCM);
