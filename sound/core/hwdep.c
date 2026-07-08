@@ -87,7 +87,7 @@ static int snd_hwdep_open(struct inode *inode, struct file * file)
 
 	if (!try_module_get(hw->card->module)) {
 		snd_card_unref(hw->card);
-		return -EFAULT;
+		return -ENODEV;
 	}
 
 	init_waitqueue_entry(&wait, current);

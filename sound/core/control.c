@@ -68,7 +68,7 @@ static int snd_ctl_open(struct inode *inode, struct file *file)
 		goto __error1;
 	}
 	if (!try_module_get(card->module)) {
-		err = -EFAULT;
+		err = -ENODEV;
 		goto __error2;
 	}
 	ctl = kzalloc(sizeof(*ctl), GFP_KERNEL);

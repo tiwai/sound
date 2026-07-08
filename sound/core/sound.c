@@ -358,7 +358,7 @@ static void snd_minor_info_read(struct snd_info_entry *entry, struct snd_info_bu
 	struct snd_minor *mptr;
 
 	guard(mutex)(&sound_mutex);
-	for (minor = 0; minor < SNDRV_OS_MINORS; ++minor) {
+	for (minor = 0; minor < ARRAY_SIZE(snd_minors); ++minor) {
 		mptr = snd_minors[minor];
 		if (!mptr)
 			continue;

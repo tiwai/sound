@@ -58,7 +58,7 @@ static int snd_mixer_oss_open(struct inode *inode, struct file *file)
 		kfree(fmixer);
 		snd_card_file_remove(card, file);
 		snd_card_unref(card);
-		return -EFAULT;
+		return -ENODEV;
 	}
 	snd_card_unref(card);
 	return 0;
