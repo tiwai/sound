@@ -63,10 +63,8 @@ static int snd_ctl_open(struct inode *inode, struct file *file)
 		goto __error1;
 	}
 	err = snd_card_file_add(card, file);
-	if (err < 0) {
-		err = -ENODEV;
+	if (err < 0)
 		goto __error1;
-	}
 	if (!try_module_get(card->module)) {
 		err = -ENODEV;
 		goto __error2;
