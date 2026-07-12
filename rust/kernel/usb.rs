@@ -18,9 +18,15 @@ use crate::{
         to_result, //
     },
     prelude::*,
-    sync::aref::AlwaysRefCounted,
+    sync::{
+        aref::AlwaysRefCounted,
+        Arc,
+        ArcBorrow, //
+    },
+    time::Delta,
     types::Opaque,
     usb::ch9::{
+        CtrlRequest,
         Direction,
         EndpointDescriptor,
         InterfaceClass,
@@ -31,7 +37,11 @@ use crate::{
 use core::{
     marker::PhantomData,
     mem::offset_of,
-    ptr::NonNull, //
+    ops::Deref,
+    ptr::{
+        self,
+        NonNull, //
+    },
     slice, //
 };
 
@@ -572,6 +582,645 @@ unsafe impl Send for Interface {}
 // allow any mutation through a shared reference.
 unsafe impl Sync for Interface {}
 
+crate::impl_flags!(
+    /// URB transfer flags.
+    ///
+    /// These correspond to the `URB_*` constants in `include/linux/usb.h`.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct TransferFlags(u32);
+
+    /// Represents a single URB transfer flag.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TransferFlag {
+        /// Short packet flag: return an error if the packet is shorter than
+        /// expected.
+        ShortNotOk = bindings::URB_SHORT_NOT_OK,
+        /// Isochronous ASAP flag: schedule the isochronous transfer as soon as
+        /// possible.
+        IsoAsap = bindings::URB_ISO_ASAP,
+        /// Do not perform a DMA mapping for the transfer buffer.
+        NoTransferDmaMap = bindings::URB_NO_TRANSFER_DMA_MAP,
+        /// Send a zero-length packet at the end of the transfer.
+        ZeroPacket = bindings::URB_ZERO_PACKET,
+        /// Do not interrupt the CPU when the URB completes.
+        NoInterrupt = bindings::URB_NO_INTERRUPT,
+    }
+);
+
+/// A USB pipe encoding endpoint type, direction, device address, and
+/// endpoint number into a single `u32`.
+///
+/// Pipe encoding follows the kernel's `PIPE_*` macros used by the USB
+/// core for control, bulk, isochronous, and interrupt transfers.
+#[derive(Clone, Copy)]
+pub struct Pipe(u32);
+
+impl Pipe {
+    /// Create a host-to-device (OUT) control pipe (endpoint 0).
+    pub fn new_send_control_pipe(dev: &Device) -> Self {
+        Self(bindings::PIPE_CONTROL << 30 | dev.devnum() << 8)
+    }
+
+    /// Create a device-to-host (IN) control pipe (endpoint 0).
+    pub fn new_receive_control_pipe(dev: &Device) -> Self {
+        Self(bindings::PIPE_CONTROL << 30 | dev.devnum() << 8 | bindings::USB_DIR_IN)
+    }
+
+    /// Create a device-to-host (IN) isochronous pipe.
+    pub fn new_receive_isoc_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+        Self(
+            bindings::PIPE_ISOCHRONOUS << 30
+                | dev.devnum() << 8
+                | u32::from(endpoint.endpoint_number()) << 15
+                | bindings::USB_DIR_IN,
+        )
+    }
+
+    /// Create a host-to-device (OUT) isochronous pipe.
+    pub fn new_send_isoc_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+        Self(
+            bindings::PIPE_ISOCHRONOUS << 30
+                | dev.devnum() << 8
+                | u32::from(endpoint.endpoint_number()) << 15,
+        )
+    }
+
+    /// Create a host-to-device (OUT) bulk pipe.
+    pub fn new_send_bulk_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+        Self(
+            bindings::PIPE_BULK << 30
+                | dev.devnum() << 8
+                | u32::from(endpoint.endpoint_number()) << 15,
+        )
+    }
+
+    /// Create a device-to-host (IN) bulk pipe.
+    pub fn new_receive_bulk_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+        Self(
+            bindings::PIPE_BULK << 30
+                | dev.devnum() << 8
+                | u32::from(endpoint.endpoint_number()) << 15
+                | bindings::USB_DIR_IN,
+        )
+    }
+
+    /// Create a host-to-device (OUT) interrupt pipe.
+    pub fn new_send_int_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+        Self(
+            bindings::PIPE_INTERRUPT << 30
+                | dev.devnum() << 8
+                | u32::from(endpoint.endpoint_number()) << 15,
+        )
+    }
+
+    /// Create a device-to-host (IN) interrupt pipe.
+    pub fn new_receive_int_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+        Self(
+            bindings::PIPE_INTERRUPT << 30
+                | dev.devnum() << 8
+                | u32::from(endpoint.endpoint_number()) << 15
+                | bindings::USB_DIR_IN,
+        )
+    }
+}
+
+/// A single isochronous packet descriptor within an URB.
+///
+/// Wraps `struct usb_iso_packet_descriptor` from the C USB core.
+#[repr(transparent)]
+pub struct IsoPacketDescriptor(bindings::usb_iso_packet_descriptor);
+
+impl IsoPacketDescriptor {
+    /// Returns the offset of the packet's data within the transfer buffer.
+    pub fn offset(&self) -> u32 {
+        self.0.offset
+    }
+
+    /// Returns the length of the packet in bytes.
+    pub fn length(&self) -> u32 {
+        self.0.length
+    }
+
+    /// Returns the actual number of bytes transferred in this packet.
+    ///
+    /// Valid only after the URB completes.
+    pub fn actual_length(&self) -> u32 {
+        self.0.actual_length
+    }
+
+    /// Returns the per-packet completion status.
+    ///
+    /// Valid only after the URB completes.
+    pub fn status(&self) -> i32 {
+        self.0.status
+    }
+}
+
+/// Trait implemented by all URB state marker types.
+///
+/// Each state specifies pre-cleanup behaviour that runs before the
+/// underlying allocation is freed.
+pub trait UrbState {
+    /// Called before the URB allocation is freed.
+    fn pre_drop(urb: &mut bindings::urb);
+}
+
+/// Marker type for an idle (unsubmitted) URB.
+pub struct Idle;
+/// Marker type for an active (submitted, in-flight) URB.
+pub struct Active;
+
+impl UrbState for Idle {
+    fn pre_drop(_urb: &mut bindings::urb) {}
+}
+impl UrbState for Active {
+    fn pre_drop(urb: &mut bindings::urb) {
+        // SAFETY: `urb` is a valid pointer to an initialized `struct urb`.
+        unsafe { bindings::usb_kill_urb(urb) }
+    }
+}
+
+/// A USB Request Block (URB).
+///
+/// This structure wraps the C [`struct urb`] and provides a safe
+/// abstraction for USB transfers.
+///
+/// [`struct urb`]: https://www.kernel.org/doc/html/latest/driver-api/usb/usb.html#c.urb
+#[repr(transparent)]
+pub struct Urb<T>(Opaque<bindings::urb>, PhantomData<T>);
+
+impl<T> Urb<T> {
+    fn as_raw(&self) -> *mut bindings::urb {
+        self.0.get()
+    }
+
+    fn inner(&self) -> &bindings::urb {
+        // SAFETY: The type invariants guarantee that `self.0` wraps a valid
+        // `struct urb`.
+        unsafe { &*self.as_raw() }
+    }
+
+    fn status(&self) -> i32 {
+        self.inner().status
+    }
+
+    /// Returns a borrow of the driver-private context data, if any.
+    pub fn context(&self) -> Option<ArcBorrow<'_, T>> {
+        let context = self.inner().context;
+        if context.is_null() {
+            None
+        } else {
+            // SAFETY: `context` was initialized by `Arc::into_raw` in `init_common`.
+            Some(unsafe { ArcBorrow::from_raw(context.cast()) })
+        }
+    }
+}
+
+/// A handle to a [`struct urb`] allocated via `usb_alloc_urb`.
+///
+/// Created by [`Urb::new_bulk`], [`Urb::new_isoc`], etc. The URB is
+/// owned by this handle — dropping the handle frees the allocation.
+///
+/// Use [`Urb::submit`] to transition to [`UrbHandle<T, Active>`].
+pub struct UrbHandle<T, S: UrbState = Idle> {
+    /// Pointer to the underlying C `struct urb`.
+    urb: NonNull<bindings::urb>,
+    /// State marker.
+    _state: PhantomData<S>,
+    /// Type of driver-private context data.
+    _ty: PhantomData<T>,
+}
+
+// SAFETY: The underlying urb is always reference-counted and can be released from any thread.
+unsafe impl<T> Send for UrbHandle<T, Active> {}
+
+impl<T, S: UrbState> Deref for UrbHandle<T, S> {
+    type Target = Urb<T>;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: `Urb<T>` is a `#[repr(transparent)]` wrapper of `struct urb`,
+        unsafe { &*(self.urb.as_ptr() as *const Urb<T>) }
+    }
+}
+
+impl<T, S: UrbState> Drop for UrbHandle<T, S> {
+    fn drop(&mut self) {
+        // SAFETY: `self.as_raw()` points to a valid, initialized C `struct urb`.
+        let urb: &mut bindings::urb = unsafe { &mut *self.as_raw() };
+        S::pre_drop(urb);
+
+        if !urb.context.is_null() {
+            // SAFETY: After `pre_drop` the URB is idle, so it is safe to
+            // reclaim the context data.
+            unsafe {
+                drop(Arc::from_raw(urb.context.cast::<T>()));
+            }
+        }
+
+        if !urb.setup_packet.is_null() {
+            // SAFETY: The setup packet was allocated via `KBox::into_raw` in
+            // `init_common` and `urb.setup_packet` is still valid.
+            unsafe {
+                drop(KBox::from_raw(urb.setup_packet.cast::<CtrlRequest>()));
+            }
+        }
+
+        if !urb.transfer_buffer.is_null() {
+            // SAFETY: The transfer buffer was allocated via `KBox::into_raw` in
+            // `init_common` and `urb.transfer_buffer` is still valid.
+            unsafe {
+                drop(KBox::from_raw(ptr::slice_from_raw_parts_mut(
+                    urb.transfer_buffer.cast::<u8>(),
+                    urb.transfer_buffer_length as usize,
+                )));
+            }
+        }
+
+        // SAFETY: `urb` points to a valid, initialized `struct urb`
+        // and is not in-flight.
+        unsafe { bindings::usb_free_urb(ptr::from_mut(urb)) };
+    }
+}
+
+/// A completed URB whose status must be checked before accessing data.
+///
+/// The driver receives this in its completion handler. Call
+/// [`check`](UrbResult::check) to verify the transfer succeeded.
+pub struct UrbResult<'a, T> {
+    /// The pinned URB reference delivered by the trampoline.
+    urb: Pin<&'a mut Urb<T>>,
+}
+
+impl<'a, T> Deref for UrbResult<'a, T> {
+    type Target = Urb<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.urb
+    }
+}
+
+impl<'a, T> UrbResult<'a, T> {
+    /// Re-submit the URB from a completion handler.
+    ///
+    /// Consumes this handle, transferring ownership to the kernel.
+    /// This is intentionally private, since a driver should always
+    /// check the result in the completion handler.
+    fn resubmit(self, mem_flags: kernel::alloc::Flags) -> Result {
+        // SAFETY: `self.urb.as_raw()` points to a valid, initialized C `struct urb`.
+        to_result(unsafe { bindings::usb_submit_urb(self.as_raw(), mem_flags.as_raw()) })
+    }
+
+    /// Check the completion status and grant access to the URB data.
+    pub fn check(&mut self) -> Result<UrbData<'_, T>> {
+        if self.status() != 0 {
+            Err(Error::from_errno(self.status()))
+        } else {
+            Ok(UrbData {
+                urb: self.urb.as_mut(),
+            })
+        }
+    }
+
+    /// Check the completion status, granting data access on success or
+    /// resubmitting the URB on failure.
+    pub fn check_or_resubmit(
+        self,
+        mem_flags: kernel::alloc::Flags,
+    ) -> Result<UrbData<'a, T>, Result> {
+        if self.status() != 0 {
+            Err(self.resubmit(mem_flags))
+        } else {
+            Ok(UrbData { urb: self.urb })
+        }
+    }
+}
+
+/// A successfully completed URB whose data is safe to read.
+pub struct UrbData<'a, T> {
+    /// The pinned URB reference.
+    urb: Pin<&'a mut Urb<T>>,
+}
+
+impl<'a, T> Deref for UrbData<'a, T> {
+    type Target = Urb<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.urb
+    }
+}
+
+impl<'a, T> UrbData<'a, T> {
+    /// Returns the number of bytes actually transferred.
+    ///
+    /// For isochronous URBs this is the sum of all packet
+    /// `actual_length` values.
+    pub fn actual_length(&self) -> u32 {
+        self.inner().actual_length
+    }
+
+    /// Returns the transfer buffer as a byte slice.
+    pub fn transfer_buffer(&self) -> &[u8] {
+        let urb = self.inner();
+        if urb.transfer_buffer.is_null() {
+            &[]
+        } else {
+            // SAFETY: The transfer buffer was set in `init_common`.
+            // The pointer and length are valid for the lifetime of the `Urb`.
+            unsafe {
+                slice::from_raw_parts(
+                    urb.transfer_buffer as *const u8,
+                    urb.transfer_buffer_length as usize,
+                )
+            }
+        }
+    }
+
+    /// Returns the ISO frame descriptors for this URB.
+    pub fn iso_frame_descs(&self) -> &[IsoPacketDescriptor] {
+        let urb = self.inner();
+
+        if urb.number_of_packets == 0 {
+            &[]
+        } else {
+            let data = urb.iso_frame_desc.as_ptr().cast::<IsoPacketDescriptor>();
+
+            // SAFETY: The `iso_frame_desc` flexible array was allocated as
+            // part of the `usb_alloc_urb` allocation. `number_of_packets`
+            // is the corresponding length.
+            unsafe { slice::from_raw_parts(data, urb.number_of_packets as usize) }
+        }
+    }
+
+    /// Extracts the payload data for a given ISO packet descriptor.
+    ///
+    /// Returns `Err` if the packet status is non-zero.
+    pub fn data_from_iso_packet_desc(
+        &self,
+        iso_packet_desc: &IsoPacketDescriptor,
+    ) -> Result<&[u8]> {
+        if iso_packet_desc.status() != 0 {
+            return Err(Error::from_errno(iso_packet_desc.status()));
+        }
+        let urb = self.inner();
+        // SAFETY: `iso_packet_desc.offset()` was computed in
+        // `init_common` and lies within the transfer buffer.
+        let data =
+            unsafe { (urb.transfer_buffer.cast::<u8>()).add(iso_packet_desc.offset() as usize) };
+
+        // SAFETY: After URB completion `actual_length()` reflects the
+        // valid bytes in the packet. The slice is within the transfer
+        // buffer allocation. The packet status was verified above.
+        unsafe {
+            Ok(slice::from_raw_parts(
+                data,
+                iso_packet_desc.actual_length() as usize,
+            ))
+        }
+    }
+
+    /// Re-submit the URB from a completion handler.
+    ///
+    /// Consumes this handle, transferring ownership to the kernel.
+    pub fn resubmit(self, mem_flags: kernel::alloc::Flags) -> Result {
+        // SAFETY: `self.as_raw()` points to a valid, initialized C `struct urb`.
+        to_result(unsafe { bindings::usb_submit_urb(self.as_raw(), mem_flags.as_raw()) })
+    }
+}
+
+/// Trampoline function to call safe completion handlers.
+///
+/// # Safety
+///
+/// `urb_ptr` must point to a valid, initialized `struct urb` whose
+/// `context` and `rust_complete` fields were set by [`Urb::init_common`].
+unsafe extern "C" fn urb_complete_trampoline<T>(urb_ptr: *mut bindings::urb) {
+    // SAFETY: `urb_ptr` is a valid pointer provided by the USB core.
+    // `rust_complete` was set to a `fn(UrbResult<'_, T>)` when initialized.
+    let complete: fn(UrbResult<'_, T>) = unsafe { core::mem::transmute((*urb_ptr).rust_complete) };
+    // SAFETY: `urb_ptr` points to a valid `struct urb`.
+    let urb = unsafe { &mut *urb_ptr.cast() };
+    // SAFETY: The data `urb` references is never moved.
+    let urb = unsafe { Pin::new_unchecked(urb) };
+    complete(UrbResult { urb });
+}
+
+impl<T> Urb<T> {
+    #[allow(clippy::too_many_arguments)]
+    fn init_common(
+        mem_flags: kernel::alloc::Flags,
+        intf: &Interface<device::Bound>,
+        pipe: Pipe,
+        setup_packet: Option<KBox<CtrlRequest>>,
+        transfer_buffer: Option<KBox<[u8]>>,
+        context_data: Option<Arc<T>>,
+        complete: fn(UrbResult<'_, T>),
+        number_of_packets: u32,
+        iso_packet_len: u16,
+        transfer_flags: TransferFlags,
+        interval: i32,
+    ) -> Result<Pin<UrbHandle<T, Idle>>> {
+        // SAFETY: `usb_alloc_urb` allocates a `struct urb` + ISO frame.
+        let urb_ptr =
+            unsafe { bindings::usb_alloc_urb(number_of_packets as c_int, mem_flags.as_raw()) };
+        if urb_ptr.is_null() {
+            return Err(ENOMEM);
+        }
+
+        // SAFETY: `urb_ptr` points to allocated and zero-initialized memory
+        // of the correct layout for `struct urb` + ISO tail.
+        let urb = unsafe { &mut *urb_ptr };
+
+        let dev: &Device<device::Bound> = intf.as_ref();
+
+        urb.complete = Some(urb_complete_trampoline::<T>);
+        urb.dev = dev.as_raw();
+        urb.pipe = pipe.0;
+        urb.number_of_packets = number_of_packets as c_int;
+        urb.transfer_flags = u32::from(transfer_flags);
+        urb.interval = interval;
+
+        // Set up ISO frame descriptors.
+        if number_of_packets > 0 {
+            // SAFETY: `urb_ptr` was allocated with `number_of_packets` ISO
+            // descriptors via `usb_alloc_urb`. `as_mut_slice` yields a valid
+            // mutable slice of that length.
+            let descs = unsafe { urb.iso_frame_desc.as_mut_slice(number_of_packets as usize) };
+            for (i, desc) in descs.iter_mut().enumerate() {
+                let pkt_len = u32::from(iso_packet_len);
+                desc.offset = (i as u32) * pkt_len;
+                desc.length = pkt_len;
+            }
+        }
+
+        if let Some(sp) = setup_packet {
+            urb.setup_packet = KBox::into_raw(sp).cast::<u8>();
+        }
+
+        if let Some(tb) = transfer_buffer {
+            let len = tb.len();
+            urb.transfer_buffer_length = len as u32;
+            urb.transfer_buffer = KBox::into_raw(tb).cast::<core::ffi::c_void>();
+        }
+
+        if let Some(data) = context_data {
+            urb.context = Arc::into_raw(data).cast_mut().cast();
+        }
+
+        urb.rust_complete = complete as *mut core::ffi::c_void;
+
+        let urb_handle = UrbHandle {
+            // SAFETY: `urb_ptr` is guaranteed non-null by the null check above.
+            urb: unsafe { NonNull::new_unchecked(urb_ptr) },
+            _state: PhantomData,
+            _ty: PhantomData,
+        };
+
+        // SAFETY: `urb_handle.urb` is never moved.
+        Ok(unsafe { Pin::new_unchecked(urb_handle) })
+    }
+
+    /// Submit the URB for execution.
+    ///
+    /// On success the caller receives an [`UrbHandle<T, Active>`] which
+    /// holds the resources for the in-flight URB. Dropping it cancels the
+    /// URB and frees the allocation.
+    pub fn submit(
+        self: Pin<UrbHandle<T, Idle>>,
+        mem_flags: kernel::alloc::Flags,
+    ) -> Result<UrbHandle<T, Active>> {
+        // SAFETY: The urb pointed to is not moved.
+        let handle = unsafe { Pin::into_inner_unchecked(self) };
+        // SAFETY: `handle.as_raw()` points to a valid, initialized `struct urb`.
+        let result = unsafe { bindings::usb_submit_urb(handle.as_raw(), mem_flags.as_raw()) };
+
+        if result == 0 {
+            let urb = handle.urb;
+            core::mem::forget(handle);
+            Ok(UrbHandle {
+                urb,
+                _state: PhantomData,
+                _ty: PhantomData,
+            })
+        } else {
+            Err(Error::from_errno(result))
+        }
+    }
+
+    /// Creates a new bulk URB.
+    pub fn new_bulk(
+        mem_flags: kernel::alloc::Flags,
+        intf: &Interface<device::Bound>,
+        pipe: Pipe,
+        transfer_buffer: KBox<[u8]>,
+        context_data: Option<Arc<T>>,
+        complete: fn(UrbResult<'_, T>),
+        transfer_flags: TransferFlags,
+    ) -> Result<Pin<UrbHandle<T, Idle>>> {
+        Self::init_common(
+            mem_flags,
+            intf,
+            pipe,
+            None,
+            Some(transfer_buffer),
+            context_data,
+            complete,
+            0,
+            0,
+            transfer_flags,
+            0,
+        )
+    }
+
+    /// Creates a new interrupt URB.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_int(
+        mem_flags: kernel::alloc::Flags,
+        intf: &Interface<device::Bound>,
+        pipe: Pipe,
+        transfer_buffer: KBox<[u8]>,
+        context_data: Option<Arc<T>>,
+        complete: fn(UrbResult<'_, T>),
+        transfer_flags: TransferFlags,
+        interval: i32,
+    ) -> Result<Pin<UrbHandle<T, Idle>>> {
+        Self::init_common(
+            mem_flags,
+            intf,
+            pipe,
+            None,
+            Some(transfer_buffer),
+            context_data,
+            complete,
+            0,
+            0,
+            transfer_flags,
+            interval,
+        )
+    }
+
+    /// Creates a new control URB.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_ctrl(
+        mem_flags: kernel::alloc::Flags,
+        intf: &Interface<device::Bound>,
+        pipe: Pipe,
+        setup_packet: KBox<CtrlRequest>,
+        transfer_buffer: Option<KBox<[u8]>>,
+        context_data: Option<Arc<T>>,
+        complete: fn(UrbResult<'_, T>),
+        transfer_flags: TransferFlags,
+    ) -> Result<Pin<UrbHandle<T, Idle>>> {
+        Self::init_common(
+            mem_flags,
+            intf,
+            pipe,
+            Some(setup_packet),
+            transfer_buffer,
+            context_data,
+            complete,
+            0,
+            0,
+            transfer_flags,
+            0,
+        )
+    }
+
+    /// Creates a new isochronous URB.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_isoc(
+        mem_flags: kernel::alloc::Flags,
+        intf: &Interface<device::Bound>,
+        pipe: Pipe,
+        transfer_buffer: KBox<[u8]>,
+        context_data: Option<Arc<T>>,
+        complete: fn(UrbResult<'_, T>),
+        number_of_packets: u32,
+        iso_packet_len: u16,
+        transfer_flags: TransferFlags,
+        interval: i32,
+    ) -> Result<Pin<UrbHandle<T, Idle>>> {
+        // Reject URBs whose buffer is too small to hold all packets.
+        let needed = (number_of_packets as usize).saturating_mul(iso_packet_len as usize);
+        if transfer_buffer.len() < needed {
+            return Err(EINVAL);
+        }
+
+        Self::init_common(
+            mem_flags,
+            intf,
+            pipe,
+            None,
+            Some(transfer_buffer),
+            context_data,
+            complete,
+            number_of_packets,
+            iso_packet_len,
+            transfer_flags,
+            interval,
+        )
+    }
+}
+
 /// A USB device.
 ///
 /// This structure represents the Rust abstraction for a C [`struct usb_device`].
@@ -594,6 +1243,17 @@ impl<Ctx: device::DeviceContext> Device<Ctx> {
     fn as_raw(&self) -> *mut bindings::usb_device {
         self.0.get()
     }
+
+    fn inner(&self) -> &bindings::usb_device {
+        // SAFETY: The type invariants guarantee that `self.0` wraps a valid
+        // `struct usb_device`.
+        unsafe { &*self.as_raw() }
+    }
+
+    /// Returns the USB device number assigned by the bus.
+    fn devnum(&self) -> u32 {
+        self.inner().devnum as u32
+    }
 }
 
 impl Device<device::Bound> {
@@ -607,6 +1267,51 @@ impl Device<device::Bound> {
         to_result(unsafe {
             bindings::usb_set_interface(self.as_raw(), i32::from(interface), i32::from(altsetting))
         })
+    }
+
+    /// Send a USB control message synchronously.
+    ///
+    /// Wraps `usb_control_msg`. The pipe direction is inferred from the setup
+    /// packet's [`Direction`]. The optional `data` buffer is
+    /// written to for IN transfers or read from for OUT transfers.
+    ///
+    /// Returns the number of bytes transferred on success.
+    pub fn control_msg(
+        &self,
+        setup: &CtrlRequest,
+        data: Option<&mut [u8]>,
+        timeout: Delta,
+    ) -> Result<i32> {
+        let pipe = match setup.direction() {
+            Direction::In => Pipe::new_receive_control_pipe(self),
+            Direction::Out => Pipe::new_send_control_pipe(self),
+        };
+        let (buf, len) = match data {
+            Some(d) => (d.as_mut_ptr().cast::<core::ffi::c_void>(), d.len() as u16),
+            None => (ptr::null_mut(), 0),
+        };
+        let timeout_ms = timeout.as_millis() as i32;
+
+        // SAFETY: `self.as_raw()` returns a valid `struct usb_device` pointer.
+        let ret = unsafe {
+            bindings::usb_control_msg(
+                self.as_raw(),
+                pipe.0,
+                setup.request(),
+                setup.requesttype(),
+                setup.value(),
+                setup.index(),
+                buf,
+                len,
+                timeout_ms,
+            )
+        };
+
+        if ret >= 0 {
+            Ok(ret)
+        } else {
+            Err(Error::from_errno(ret))
+        }
     }
 }
 
