@@ -28,6 +28,8 @@ use core::{
     ptr::NonNull, //
 };
 
+pub mod ch9;
+
 /// An adapter for the registration of USB drivers.
 pub struct Adapter<T: Driver>(T);
 
