@@ -1514,6 +1514,9 @@ typedef void (*usb_complete_t)(struct urb *);
  * @complete: Completion handler. This URB is passed as the parameter to the
  *	completion function.  The completion function may then do what
  *	it likes with the URB, including resubmitting or freeing it.
+ * @rust_complete: Completion handler for Rust drivers. This is necessary to
+ *	allow Rust drivers to create completion handlers using the Rust ABI,
+ *	avoiding the need for `extern "C"`.
  * @iso_frame_desc: Used to provide arrays of ISO transfer buffers and to
  *	collect the transfer status for each buffer.
  *
@@ -1664,6 +1667,7 @@ struct urb {
 	int error_count;		/* (return) number of ISO errors */
 	void *context;			/* (in) context for completion */
 	usb_complete_t complete;	/* (in) completion routine */
+	void *rust_complete;		/* (in) rust completion routine */
 	struct usb_iso_packet_descriptor iso_frame_desc[];
 					/* (in) ISO ONLY */
 };
