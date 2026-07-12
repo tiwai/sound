@@ -20,12 +20,19 @@ use crate::{
     prelude::*,
     sync::aref::AlwaysRefCounted,
     types::Opaque,
+    usb::ch9::{
+        Direction,
+        EndpointDescriptor,
+        InterfaceClass,
+        InterfaceDescriptor, //
+    },
     ThisModule, //
 };
 use core::{
     marker::PhantomData,
     mem::offset_of,
     ptr::NonNull, //
+    slice, //
 };
 
 pub mod ch9;
@@ -339,6 +346,173 @@ impl<Ctx: device::DeviceContext> Interface<Ctx> {
     fn as_raw(&self) -> *mut bindings::usb_interface {
         self.0.get()
     }
+
+    fn inner(&self) -> &bindings::usb_interface {
+        // SAFETY: The type invariants guarantee that `self.0` wraps a valid
+        // `struct usb_interface`.
+        unsafe { &*self.as_raw() }
+    }
+
+    /// Returns the current alternate setting for this interface.
+    pub fn cur_altsetting(&self) -> &HostInterface {
+        // SAFETY: `cur_altsetting` is a valid `struct usb_host_interface`
+        // pointer provided by the USB core. `HostInterface` is
+        // `#[repr(transparent)]` over it.
+        unsafe { &*(self.inner().cur_altsetting as *const HostInterface) }
+    }
+
+    /// Returns all alternate settings for this interface.
+    pub fn altsettings(&self) -> &[HostInterface] {
+        // SAFETY: `altsetting` is a valid array of `num_altsetting`
+        // entries provided by the USB core. `HostInterface` is
+        // `#[repr(transparent)]` over `usb_host_interface`.
+        unsafe {
+            slice::from_raw_parts(
+                self.inner().altsetting as *const HostInterface,
+                self.inner().num_altsetting as usize,
+            )
+        }
+    }
+}
+
+impl Interface<device::Bound> {
+    /// Select an alternate setting for this interface.
+    ///
+    /// On success the device switches to the given alternate setting,
+    /// which may change the set of active endpoints. This is a convenience
+    /// wrapper around [`Device<Bound>::set_interface`].
+    pub fn set_interface(&self, altsetting: u8) -> Result {
+        let dev: &Device<device::Bound> = self.as_ref();
+        dev.set_interface(self.cur_altsetting().number(), altsetting)
+    }
+}
+
+/// Abstraction for the USB Host Interface structure, i.e. `struct usb_host_interface`.
+#[repr(transparent)]
+pub struct HostInterface(Opaque<bindings::usb_host_interface>);
+
+impl HostInterface {
+    fn inner(&self) -> &bindings::usb_host_interface {
+        // SAFETY: The type invariants guarantee that `self.0` wraps a valid
+        // `struct usb_host_interface`.
+        unsafe { &*self.0.get() }
+    }
+
+    /// Returns the interface descriptor.
+    fn desc(&self) -> &InterfaceDescriptor {
+        // SAFETY: `desc` is a valid `struct usb_interface_descriptor`
+        // embedded in `usb_host_interface`. `InterfaceDescriptor` is
+        // `#[repr(transparent)]` over it.
+        unsafe { &*((core::ptr::from_ref(&self.inner().desc)).cast()) }
+    }
+
+    /// Returns the list of endpoints in this alternate setting.
+    pub fn endpoints(&self) -> &[HostEndpoint] {
+        // SAFETY: `endpoint` is a valid array of `bNumEndpoints` entries.
+        // `HostEndpoint` is `#[repr(transparent)]` over
+        // `usb_host_endpoint`.
+        unsafe {
+            core::ptr::slice_from_raw_parts(
+                self.inner().endpoint as *const HostEndpoint,
+                self.desc().bNumEndpoints() as usize,
+            )
+            .as_ref()
+            .unwrap_or(&[])
+        }
+    }
+
+    /// Returns the interface number (`bInterfaceNumber`).
+    pub fn number(&self) -> u8 {
+        self.desc().bInterfaceNumber()
+    }
+
+    /// Returns the alternate setting number (`bAlternateSetting`).
+    pub fn alternate_setting(&self) -> u8 {
+        self.desc().bAlternateSetting()
+    }
+
+    /// Returns the interface class (`bInterfaceClass`).
+    pub fn class(&self) -> InterfaceClass {
+        self.desc().bInterfaceClass()
+    }
+}
+
+/// USB endpoint transfer type.
+///
+/// Maps to the `bmAttributes` field of the endpoint descriptor
+/// (`USB_ENDPOINT_XFER_*` constants).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EndpointType {
+    /// Control endpoint.
+    Control = bindings::USB_ENDPOINT_XFER_CONTROL as u8,
+    /// Isochronous endpoint.
+    Isoc = bindings::USB_ENDPOINT_XFER_ISOC as u8,
+    /// Bulk endpoint.
+    Bulk = bindings::USB_ENDPOINT_XFER_BULK as u8,
+    /// Interrupt endpoint.
+    Int = bindings::USB_ENDPOINT_XFER_INT as u8,
+}
+
+/// Abstraction for the USB Host Endpoint structure, i.e. [`struct usb_host_endpoint`].
+///
+/// [`struct usb_host_endpoint`]: https://docs.kernel.org/driver-api/usb/usb.html#c.usb_host_endpoint
+#[repr(transparent)]
+pub struct HostEndpoint(Opaque<bindings::usb_host_endpoint>);
+
+impl HostEndpoint {
+    fn inner(&self) -> &bindings::usb_host_endpoint {
+        // SAFETY: The type invariants guarantee that `self.0` wraps a valid
+        // `struct usb_host_endpoint`.
+        unsafe { &*self.0.get() }
+    }
+
+    /// Returns the endpoint descriptor.
+    fn desc(&self) -> &EndpointDescriptor {
+        // SAFETY: `desc` is a valid `struct usb_endpoint_descriptor`
+        // embedded in `usb_host_endpoint`. `EndpointDescriptor` is
+        // `#[repr(transparent)]` over it.
+        unsafe { &*(core::ptr::from_ref(&self.inner().desc).cast()) }
+    }
+
+    /// Returns the direction of this endpoint (IN or OUT).
+    pub fn endpoint_dir(&self) -> Direction {
+        if self.desc().bEndpointAddress() & Direction::In as u8 == 0 {
+            Direction::Out
+        } else {
+            Direction::In
+        }
+    }
+
+    /// Returns the endpoint number (0-15).
+    pub fn endpoint_number(&self) -> u8 {
+        self.desc().bEndpointAddress() & bindings::USB_ENDPOINT_NUMBER_MASK as u8
+    }
+
+    /// Returns the transfer type of this endpoint.
+    pub fn endpoint_type(&self) -> EndpointType {
+        let val = self.desc().bmAttributes() & bindings::USB_ENDPOINT_XFERTYPE_MASK as u8;
+        // SAFETY: `bmAttributes` masked with `USB_ENDPOINT_XFERTYPE_MASK`
+        // is guaranteed to be 0-3, which maps exactly to the four
+        // `EndpointType` variants.
+        unsafe { core::mem::transmute::<u8, EndpointType>(val) }
+    }
+
+    /// Returns the interval for interrupt and isochronous endpoints.
+    pub fn interval(&self) -> u8 {
+        self.desc().bInterval()
+    }
+
+    /// Returns the maximum packet size for this endpoint.
+    pub fn maxp(&self) -> u16 {
+        u16::from_le(self.desc().wMaxPacketSize()) & bindings::USB_ENDPOINT_MAXP_MASK as u16
+    }
+
+    /// Returns the high-speed multiplier for isochronous endpoints.
+    pub fn maxp_mult(&self) -> u16 {
+        (u16::from_le(self.desc().wMaxPacketSize()) & bindings::USB_EP_MAXP_MULT_MASK as u16)
+            >> bindings::USB_EP_MAXP_MULT_SHIFT
+    }
 }
 
 // SAFETY: `usb::Interface` is a transparent wrapper of `struct usb_interface`.
@@ -363,8 +537,8 @@ impl<Ctx: device::DeviceContext> AsRef<device::Device<Ctx>> for Interface<Ctx> {
     }
 }
 
-impl<Ctx: device::DeviceContext> AsRef<Device> for Interface<Ctx> {
-    fn as_ref(&self) -> &Device {
+impl<Ctx: device::DeviceContext> AsRef<Device<Ctx>> for Interface<Ctx> {
+    fn as_ref(&self) -> &Device<Ctx> {
         // SAFETY: `self.as_raw()` is valid by the type invariants.
         let usb_dev = unsafe { bindings::interface_to_usbdev(self.as_raw()) };
 
@@ -411,7 +585,7 @@ unsafe impl Sync for Interface {}
 ///
 /// [`struct usb_device`]: https://www.kernel.org/doc/html/latest/driver-api/usb/usb.html#c.usb_device
 #[repr(transparent)]
-struct Device<Ctx: device::DeviceContext = device::Normal>(
+pub struct Device<Ctx: device::DeviceContext = device::Normal>(
     Opaque<bindings::usb_device>,
     PhantomData<Ctx>,
 );
@@ -419,6 +593,20 @@ struct Device<Ctx: device::DeviceContext = device::Normal>(
 impl<Ctx: device::DeviceContext> Device<Ctx> {
     fn as_raw(&self) -> *mut bindings::usb_device {
         self.0.get()
+    }
+}
+
+impl Device<device::Bound> {
+    /// Select an alternate setting for the given interface.
+    ///
+    /// On success the device switches the given interface to the given alternate setting,
+    /// which may change the set of active endpoints.
+    pub fn set_interface(&self, interface: u8, altsetting: u8) -> Result {
+        // SAFETY: `self.as_raw()` is a valid `struct usb_device` pointer by the type
+        // invariants. `usb_set_interface` is safe to call on a bound device.
+        to_result(unsafe {
+            bindings::usb_set_interface(self.as_raw(), i32::from(interface), i32::from(altsetting))
+        })
     }
 }
 
