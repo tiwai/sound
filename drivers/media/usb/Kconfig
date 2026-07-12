@@ -14,6 +14,7 @@ if MEDIA_CAMERA_SUPPORT
 	comment "Webcam devices"
 
 source "drivers/media/usb/gspca/Kconfig"
+source "drivers/media/usb/gv-usb2/Kconfig"
 source "drivers/media/usb/pwc/Kconfig"
 source "drivers/media/usb/s2255/Kconfig"
 source "drivers/media/usb/usbtv/Kconfig"

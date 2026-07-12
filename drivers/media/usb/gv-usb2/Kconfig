@@ -1,0 +1,9 @@
+config VIDEO_GVUSB2
+	tristate "GV-USB2 audio/video capture device driver"
+	depends on VIDEO_DEV && RUST
+	help
+	  Rust driver for the I-O Data GV-USB2 Composite-USB Video Capture
+	  Device.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called gv_usb2.
