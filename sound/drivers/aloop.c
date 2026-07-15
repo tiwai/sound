@@ -1668,7 +1668,7 @@ static int loopback_channels_get(struct snd_kcontrol *kcontrol,
 static int loopback_access_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
-	const char * const texts[] = {"Interleaved", "Non-interleaved"};
+	static const char * const texts[] = {"Interleaved", "Non-interleaved"};
 
 	return snd_ctl_enum_info(uinfo, 1, ARRAY_SIZE(texts), texts);
 }
