@@ -59,10 +59,18 @@ impl<'a> ModInfoBuilder<'a> {
         };
         let length = string.len();
         let string = Literal::byte_string(string.as_bytes());
+        // The builtin (prefixed) entry is guarded by #[cfg(not(MODULE))] so
+        // it is omitted when --cfg MODULE is passed.  The loadable
+        // (non-prefixed) entry is emitted unconditionally: modpost checks
+        // loadable-module .o files for bare "license=" (etc.) strings and
+        // skips vmlinux, so always having the non-prefixed entry ensures
+        // modpost succeeds even when --cfg MODULE is not passed by the build
+        // system (e.g. when a .ko is built as a single-target without the
+        // corresponding CONFIG_* symbol enabled in .config).
         let cfg = if builtin {
             quote!(#[cfg(not(MODULE))])
         } else {
-            quote!(#[cfg(MODULE)])
+            quote!()
         };
 
         let counter = format_ident!(
