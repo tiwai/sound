@@ -21,4 +21,17 @@ config SND_RUST_PCM_FORCE
 	default y
 	select SND_PCM
 
+config SND_RUST_DUMMY
+	tristate "Dummy sound driver (Rust)"
+	select SND_PCM
+	help
+	  Rust implementation of a dummy ALSA sound card with a PCM device
+	  and two mixer controls (master volume and master switch), backed
+	  by a faux device and an hrtimer-based period simulator.
+
+	  To compile this as a module, choose M here: the module will be
+	  called snd-rust-dummy.
+
+	  If unsure, say N.
+
 endif # SND_RUST
