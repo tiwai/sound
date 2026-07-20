@@ -11,6 +11,8 @@
 //! - [`include/sound/info.h`](srctree/include/sound/info.h)
 //! - [`include/sound/pcm.h`](srctree/include/sound/pcm.h)
 
+#[cfg(CONFIG_SND_AC97_CODEC = "y")]
+pub mod ac97;
 #[cfg(CONFIG_SND_AK4531_CODEC = "y")]
 pub mod ak4531;
 pub mod card;
