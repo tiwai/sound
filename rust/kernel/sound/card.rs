@@ -15,6 +15,11 @@ use crate::{
 use core::ptr::NonNull;
 use core::ops::Deref;
 
+/// Power state: fully on (`SNDRV_CTL_POWER_D0`).
+pub const POWER_D0: u32 = bindings::SNDRV_CTL_POWER_D0 as u32;
+/// Power state: suspended with power retained (`SNDRV_CTL_POWER_D3hot`).
+pub const POWER_D3HOT: u32 = bindings::SNDRV_CTL_POWER_D3hot as u32;
+
 /// A sound card.
 ///
 /// Wraps `struct snd_card`. The card lifetime is managed by devres - it will
@@ -107,6 +112,28 @@ impl Card {
                 80,
             );
         }
+    }
+
+    /// Changes the card power state and wakes any waiters.
+    ///
+    /// Call with [`POWER_D3HOT`] in a driver suspend callback and with
+    /// [`POWER_D0`] in a driver resume callback to block/unblock userspace
+    /// API calls during system sleep transitions.
+    pub fn power_change_state(&self, state: u32) {
+        // snd_power_change_state() is an inline C function so bindgen does not
+        // emit it into bindings_generated.rs.  The helper in rust/helpers/sound.c
+        // wraps it; declare the symbol here so the linker resolves it directly
+        // without waiting for bindings_helpers_generated.rs to be regenerated.
+        #[allow(improper_ctypes)]
+        extern "C" {
+            #[link_name = "rust_helper_snd_power_change_state"]
+            fn snd_power_change_state_helper(
+                card: *mut bindings::snd_card,
+                state: core::ffi::c_uint,
+            );
+        }
+        // SAFETY: self.as_raw() is a valid snd_card for the lifetime of self.
+        unsafe { snd_power_change_state_helper(self.as_raw(), state as _) };
     }
 
     /// Returns the raw `*mut snd_card` pointer.
