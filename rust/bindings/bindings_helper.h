@@ -98,6 +98,7 @@
 #include <linux/xarray.h>
 #include <net/genetlink.h>
 #include <net/netlink.h>
+#include <sound/ak4531_codec.h>
 #include <sound/control.h>
 #include <sound/core.h>
 #include <sound/info.h>
