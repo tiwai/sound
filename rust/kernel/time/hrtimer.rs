@@ -505,6 +505,21 @@ impl<T> HrTimer<T> {
         unsafe { bindings::hrtimer_cancel(c_timer_ptr) != 0 }
     }
 
+    /// Try to cancel the timer without blocking.
+    ///
+    /// Returns positive if the timer was active and cancelled, 0 if inactive,
+    /// or negative if the callback is currently running (no cancellation).
+    ///
+    /// # Safety
+    ///
+    /// `this` must point to a valid `Self`.
+    pub(crate) unsafe fn raw_try_cancel(this: *const Self) -> i32 {
+        // SAFETY: `this` points to an allocation of at least `HrTimer` size.
+        let c_timer_ptr = unsafe { HrTimer::raw_get(this) };
+        // SAFETY: `c_timer_ptr` is initialized and valid.
+        unsafe { bindings::hrtimer_try_to_cancel(c_timer_ptr) }
+    }
+
     /// Forward the timer expiry for a given timer pointer.
     ///
     /// # Safety
