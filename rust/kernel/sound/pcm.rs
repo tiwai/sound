@@ -182,6 +182,25 @@ impl Runtime {
         unsafe { (*self.as_raw()).dma_bytes }
     }
 
+    /// Returns the DMA buffer physical address (valid after hw_params).
+    pub fn dma_addr(&self) -> u32 {
+        unsafe { (*self.as_raw()).dma_addr as u32 }
+    }
+
+    /// Returns the width in bits of the negotiated sample format.
+    ///
+    /// Returns 8 for 8-bit formats, 16 for 16-bit formats, etc.
+    pub fn format_width(&self) -> i32 {
+        unsafe {
+            bindings::snd_pcm_format_width((*self.as_raw()).format)
+        }
+    }
+
+    /// Returns the raw `*mut snd_pcm_runtime` pointer.
+    pub fn as_raw_runtime(&self) -> *mut bindings::snd_pcm_runtime {
+        self.as_raw()
+    }
+
     /// Sets per-runtime driver private data with a custom free function.
     ///
     /// # Safety
@@ -206,6 +225,44 @@ impl Runtime {
     /// Returns the frame size in bits (channels x sample-width), valid after hw_params.
     pub fn frame_bits(&self) -> u32 {
         unsafe { (*self.as_raw()).frame_bits }
+    }
+
+    /// Adds a list-based hardware parameter constraint to a runtime.
+    ///
+    /// The list must remain valid for the duration of the constraint (static lifetime).
+    ///
+    /// # Safety
+    ///
+    /// `constraint` must point to a static (module-lifetime) struct whose embedded
+    /// `list` pointer is also static.  The kernel stores `constraint` verbatim as
+    /// `rule->private` and dereferences it on every `hw_refine` call; a stack-
+    /// allocated struct will dangle after `open()` returns.
+    pub unsafe fn hw_constraint_list(
+        &self,
+        cond: u32,
+        var: i32,
+        constraint: &'static bindings::snd_pcm_hw_constraint_list,
+    ) -> crate::error::Result {
+        crate::error::to_result(unsafe {
+            bindings::snd_pcm_hw_constraint_list(self.as_raw(), cond, var, constraint)
+        })
+    }
+
+    /// Adds a ratnum-based hardware parameter constraint to a runtime.
+    ///
+/// # Safety
+    ///
+    /// Same lifetime requirement as `hw_constraint_list`: `constraint` and the
+    /// `rats` array it points to must both be static.
+    pub unsafe fn hw_constraint_ratnums(
+        &self,
+        cond: u32,
+        var: i32,
+        constraint: &'static bindings::snd_pcm_hw_constraint_ratnums,
+    ) -> crate::error::Result {
+        crate::error::to_result(unsafe {
+            bindings::snd_pcm_hw_constraint_ratnums(self.as_raw(), cond, var, constraint)
+        })
     }
 }
 
@@ -235,6 +292,11 @@ impl Substream {
     /// Returns the stream direction.
     pub fn stream(&self) -> StreamDir {
         StreamDir::from_c(unsafe { (*self.as_raw()).stream })
+    }
+
+    /// Returns the PCM device index (e.g., 0 for device 0, 1 for device 1).
+    pub fn pcm_device(&self) -> i32 {
+        unsafe { (*(*self.as_raw()).pcm).device }
     }
 
     /// Returns the PCM runtime (only valid while the substream is open).
@@ -485,7 +547,8 @@ impl Pcm {
         Ok(unsafe { &*pcm_ptr.cast::<Pcm>() })
     }
 
-    fn as_raw(&self) -> *mut bindings::snd_pcm {
+    /// Returns the underlying raw `snd_pcm` pointer.
+    pub fn as_raw(&self) -> *mut bindings::snd_pcm {
         self.0.get()
     }
 
@@ -539,12 +602,16 @@ impl Pcm {
             size,
         )
     }
-}
 
-/// Notifies ALSA that a PCM period has elapsed.
-pub fn period_elapsed(substream: &Substream) {
-    // SAFETY: &Substream is a valid, live snd_pcm_substream.
-    unsafe { bindings::snd_pcm_period_elapsed(substream.as_raw()) };
+    /// Set up DMA-mapped managed buffers using the given device (for PCI drivers).
+    pub fn set_managed_buffer_dev<Ctx: super::super::device::DeviceContext>(
+        &self,
+        dev: &super::super::device::Device<Ctx>,
+        size: usize,
+        max: usize,
+    ) -> Result {
+        self.set_managed_buffer_all(bindings::SNDRV_DMA_TYPE_DEV, dev.as_raw(), size, max)
+    }
 }
 
 /// Returns the name of a PCM sample format as a static C string.
@@ -552,6 +619,22 @@ pub fn format_name(fmt: i32) -> &'static CStr {
     // SAFETY: `snd_pcm_format_name` always returns a valid, statically-allocated,
     // NUL-terminated C string for any format value, including unknown ones.
     unsafe { CStr::from_char_ptr(bindings::snd_pcm_format_name(fmt as bindings::snd_pcm_format_t)) }
+}
+
+/// Notifies ALSA that a period has elapsed given a raw substream pointer.
+///
+/// # Safety
+///
+/// `ptr` must be a valid, non-null `snd_pcm_substream` pointer and the hardware
+/// must have actually completed a period.
+pub unsafe fn period_elapsed_raw(ptr: *mut bindings::snd_pcm_substream) {
+    unsafe { bindings::snd_pcm_period_elapsed(ptr) };
+}
+
+/// Hardware parameter variable indices (mirrors `SNDRV_PCM_HW_PARAM_*`).
+pub mod hw_param {
+    /// Sample rate (`SNDRV_PCM_HW_PARAM_RATE`).
+    pub const RATE: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_RATE as i32;
 }
 
 // SAFETY: Pcm is owned by the ALSA card with appropriate locking.
