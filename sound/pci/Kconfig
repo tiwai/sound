@@ -511,9 +511,15 @@ config SND_EMU10K1X
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-emu10k1x.
 
+config SND_AK4531_CODEC
+	tristate
+	help
+	  Support for Asahi Kasei AK4531 codec, used by the ENS1370 driver.
+
 config SND_ENS1370
 	tristate "(Creative) Ensoniq AudioPCI 1370"
 	depends on HAS_IOPORT
+	select SND_AK4531_CODEC
 	select SND_RAWMIDI
 	select SND_PCM
 	help

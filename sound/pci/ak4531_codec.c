@@ -14,11 +14,9 @@
 #include <sound/ak4531_codec.h>
 #include <sound/tlv.h>
 
-/*
 MODULE_AUTHOR("Jaroslav Kysela <perex@perex.cz>");
 MODULE_DESCRIPTION("Universal routines for AK4531 codec");
 MODULE_LICENSE("GPL");
-*/
 
 static void snd_ak4531_proc_init(struct snd_card *card, struct snd_ak4531 *ak4531);
 
@@ -413,6 +411,7 @@ int snd_ak4531_mixer(struct snd_card *card,
 		*rak4531 = ak4531;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(snd_ak4531_mixer);
 
 /*
  * power management
@@ -426,6 +425,7 @@ void snd_ak4531_suspend(struct snd_ak4531 *ak4531)
 	/* powerdown */
 	ak4531->write(ak4531, AK4531_RESET, 0x01);
 }
+EXPORT_SYMBOL_GPL(snd_ak4531_suspend);
 
 void snd_ak4531_resume(struct snd_ak4531 *ak4531)
 {
@@ -442,6 +442,7 @@ void snd_ak4531_resume(struct snd_ak4531 *ak4531)
 		ak4531->write(ak4531, idx, ak4531->regs[idx]);
 	}
 }
+EXPORT_SYMBOL_GPL(snd_ak4531_resume);
 #endif
 
 /*
