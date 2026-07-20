@@ -735,6 +735,18 @@ impl Pcm {
     ) -> Result {
         self.set_managed_buffer_all(bindings::SNDRV_DMA_TYPE_DEV, dev.as_raw(), size, max)
     }
+
+    /// Suspends all active substreams of a PCM device.
+    ///
+    /// Calls `trigger(Suspend)` on each running substream and transitions them to
+    /// the `SUSPENDED` state.  Most drivers do **not** need to call this - the PCM
+    /// device type's own PM callback invokes it automatically.  Only call it
+    /// explicitly when the driver needs to suspend streams before the PCM device's
+    /// PM path runs.
+    pub fn suspend_all(&self) -> Result {
+        // SAFETY: pcm.as_raw() is a valid snd_pcm.
+        to_result(unsafe { bindings::snd_pcm_suspend_all(self.as_raw()) })
+    }
 }
 
 /// Returns the name of a PCM sample format as a static C string.
