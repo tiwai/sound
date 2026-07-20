@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
+use core::mem::ManuallyDrop;
+
 use super::HasHrTimer;
 use super::HrTimer;
 use super::HrTimerCallback;
@@ -36,6 +38,53 @@ where
         // SAFETY: As `timer_ptr` points into `T` and `T` is valid, `timer_ptr`
         // must point to a valid `HrTimer` instance.
         unsafe { HrTimer::<T>::raw_cancel(timer_ptr) }
+    }
+}
+
+impl<T> ArcHrTimerHandle<T>
+where
+    T: HasHrTimer<T>,
+{
+    /// Try to cancel the timer without blocking.
+    ///
+    /// Unlike [`HrTimerHandle::cancel`], this calls `hrtimer_try_to_cancel`
+    /// which returns immediately if the timer callback is currently running
+    /// rather than blocking on the hrtimer base lock.  Use this when calling
+    /// from within an hrtimer callback context to avoid deadlocking.
+    ///
+    /// The handle is not consumed: a later blocking cancel (e.g. by dropping
+    /// the handle from process context via `sync_stop`) can complete the
+    /// synchronisation once the callback context has exited.
+    ///
+    /// Returns positive if the timer was cancelled, 0 if not active, or
+    /// negative if the callback is currently running.
+    pub fn try_cancel(&mut self) -> i32 {
+        let self_ptr = Arc::as_ptr(&self.inner);
+        // SAFETY: `self_ptr` is derived from a valid reference.
+        let timer_ptr = unsafe { <T as HasHrTimer<T>>::raw_get_timer(self_ptr) };
+        // SAFETY: `timer_ptr` points into a valid `HrTimer<T>`.
+        unsafe { HrTimer::<T>::raw_try_cancel(timer_ptr) }
+    }
+
+    /// Cancel the timer without blocking, consuming the handle.
+    ///
+    /// Like [`try_cancel`] but also releases the handle's `Arc` refcount
+    /// without running the blocking `Drop` implementation.  Use when no
+    /// subsequent `sync_stop` will run to drop the handle normally.
+    ///
+    /// Returns `true` if the timer was successfully cancelled.
+    pub fn cancel_or_noop(self) -> bool {
+        let this = ManuallyDrop::new(self);
+        let self_ptr = Arc::as_ptr(&this.inner);
+        // SAFETY: `self_ptr` is derived from a valid reference.
+        let timer_ptr = unsafe { <T as HasHrTimer<T>>::raw_get_timer(self_ptr) };
+        // SAFETY: `timer_ptr` points into a valid `HrTimer<T>`.
+        let ret = unsafe { HrTimer::<T>::raw_try_cancel(timer_ptr) };
+        // Release the Arc refcount without running Drop (which calls
+        // hrtimer_cancel and would deadlock from within a callback).
+        // SAFETY: `this.inner` is not accessed after this point.
+        drop(unsafe { core::ptr::read(&this.inner) });
+        ret > 0
     }
 }
 
