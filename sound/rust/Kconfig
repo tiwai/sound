@@ -34,4 +34,30 @@ config SND_RUST_DUMMY
 
 	  If unsure, say N.
 
+config SND_RUST_ENS1370
+	tristate "Ensoniq AudioPCI ES1370 (Rust)"
+	depends on PCI
+	select SND_PCM
+	select SND_AK4531_CODEC
+	help
+	  Rust port of the ENS1370 path of the Ensoniq AudioPCI driver,
+	  targeting QEMU es1370 emulation. Implements two PCM devices
+	  (DAC2+ADC variable-rate, DAC1 fixed-rate), AK4531 codec mixer,
+	  and shared IRQ handler.
+
+	  To compile this as a module, choose M here: the module will be
+	  called snd-rust-ens1370.
+
+	  If unsure, say N.
+
+# Hidden bool: forces SND_AK4531_CODEC=y whenever SND_RUST_ENS1370 is
+# enabled (y or m).  A bool selecting a tristate always propagates y,
+# so the kernel crate can safely include the AK4531 abstraction code that
+# calls snd_ak4531_mixer / snd_ak4531_suspend / etc. -
+# symbols that must reside in vmlinux (not in a module).
+config SND_RUST_ENS1370_FORCE_AK4531
+	bool
+	default y if SND_RUST_ENS1370
+	select SND_AK4531_CODEC
+
 endif # SND_RUST
