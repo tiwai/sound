@@ -94,6 +94,7 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
+#include <sound/core.h>
 #include <trace/events/rust_sample.h>
 
 /*

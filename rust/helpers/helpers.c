@@ -90,6 +90,7 @@
 #include "security.c"
 #include "signal.c"
 #include "slab.c"
+#include "sound.c"
 #include "spinlock.c"
 #include "string.c"
 #include "sync.c"
