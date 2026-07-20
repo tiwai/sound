@@ -49,6 +49,13 @@ __rust_helper unsigned int rust_helper_params_periods(const struct snd_pcm_hw_pa
 	return params_periods(p);
 }
 
+/* snd_power_change_state is inline, needs a C wrapper for Rust */
+__rust_helper void rust_helper_snd_power_change_state(struct snd_card *card,
+						       unsigned int state)
+{
+	snd_power_change_state(card, state);
+}
+
 /* hw_param_interval / hw_param_mask are macros; wrap them for Rust */
 __rust_helper struct snd_interval *rust_helper_hw_param_interval(
 	struct snd_pcm_hw_params *p, int n)
