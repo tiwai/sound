@@ -100,6 +100,7 @@
 #include <net/netlink.h>
 #include <sound/control.h>
 #include <sound/core.h>
+#include <sound/pcm.h>
 #include <trace/events/rust_sample.h>
 
 /*
