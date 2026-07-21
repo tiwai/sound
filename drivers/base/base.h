@@ -119,6 +119,9 @@ struct device_private {
 	const struct device_driver *async_driver;
 	char *deferred_probe_reason;
 	struct device *device;
+#ifdef CONFIG_RUST
+	void *rust_private;
+#endif
 	u8 dead:1;
 };
 #define to_device_private_parent(obj)	\
