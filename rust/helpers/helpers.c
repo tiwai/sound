@@ -83,6 +83,7 @@
 #include "pci.c"
 #include "pid_namespace.c"
 #include "platform.c"
+#include "pm_runtime.c"
 #include "poll.c"
 #include "processor.c"
 #include "property.c"
