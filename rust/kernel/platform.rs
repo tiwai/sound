@@ -72,6 +72,11 @@ unsafe impl<T: Driver> driver::RegistrationOps for Adapter<T> {
             None => core::ptr::null(),
         };
 
+        let pm_ops = match T::PM_OPS {
+            Some(ops) => ops,
+            None => core::ptr::null(),
+        };
+
         // SAFETY: It's safe to set the fields of `struct platform_driver` on initialization.
         unsafe {
             (*pdrv.get()).driver.name = name.as_char_ptr();
@@ -79,6 +84,7 @@ unsafe impl<T: Driver> driver::RegistrationOps for Adapter<T> {
             (*pdrv.get()).remove = Some(Self::remove_callback);
             (*pdrv.get()).driver.of_match_table = of_table;
             (*pdrv.get()).driver.acpi_match_table = acpi_table;
+            (*pdrv.get()).driver.pm = pm_ops;
         }
 
         // SAFETY: `pdrv` is guaranteed to be a valid `DriverType`.
@@ -222,6 +228,9 @@ pub trait Driver {
 
     /// The table of ACPI device ids supported by the driver.
     const ACPI_ID_TABLE: Option<acpi::IdTable<Self::IdInfo>> = None;
+
+    /// Runtime PM callbacks
+    const PM_OPS: Option<&'static bindings::dev_pm_ops> = None;
 
     /// Platform driver probe.
     ///
