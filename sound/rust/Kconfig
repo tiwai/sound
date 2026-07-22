@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0
+
+menuconfig SND_RUST
+	bool "Rust support for ALSA sound"
+	depends on RUST
+	depends on SND=y
+	help
+	  Enable Rust-based ALSA sound drivers.
+
+	  If unsure, say N.
+
+if SND_RUST
+
+# Hidden bool: forces SND_PCM=y whenever any Rust ALSA driver is enabled.
+# rust/kernel/sound/pcm.rs is compiled into vmlinux unconditionally (no
+# #[cfg] gate in sound/mod.rs) whenever CONFIG_SND=y.  It references
+# snd_pcm_* symbols that must therefore also live in vmlinux.  A bool
+# selecting a tristate always propagates y, ensuring SND_PCM=y.
+config SND_RUST_PCM_FORCE
+	bool
+	default y
+	select SND_PCM
+
+endif # SND_RUST
