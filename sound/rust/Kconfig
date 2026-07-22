@@ -60,4 +60,29 @@ config SND_RUST_ENS1370_FORCE_AK4531
 	default y if SND_RUST_ENS1370
 	select SND_AK4531_CODEC
 
+config SND_RUST_INTEL8X0
+	tristate "Intel ICH AC97 sound driver (Rust)"
+	depends on PCI
+	select SND_PCM
+	help
+	  Rust port of the Intel ICH AC97 driver (intel8x0), targeting
+	  QEMU's ICH AC97 emulation (82801AA/ICH). Implements two PCM
+	  devices (stereo playback + capture, mono mic capture) and AC97
+	  codec mixer via snd_ac97_mixer().
+
+	  To compile this as a module, choose M here: the module will be
+	  called snd-rust-intel8x0.
+
+	  If unsure, say N.
+
+# Hidden bool: forces SND_AC97_CODEC=y whenever SND_RUST_INTEL8X0 is
+# enabled (y or m).  A bool selecting a tristate always propagates y,
+# so the kernel crate can safely include the AC97 abstraction code that
+# calls snd_ac97_bus / snd_ac97_mixer / snd_ac97_suspend / etc. -
+# symbols that must reside in vmlinux (not in a module).
+config SND_RUST_INTEL8X0_FORCE_AC97
+	bool
+	default y if SND_RUST_INTEL8X0
+	select SND_AC97_CODEC
+
 endif # SND_RUST
