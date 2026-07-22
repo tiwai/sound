@@ -99,6 +99,8 @@ source "sound/xen/Kconfig"
 
 source "sound/virtio/Kconfig"
 
+source "sound/rust/Kconfig"
+
 endif # SND
 
 endif # SOUND
