@@ -96,6 +96,7 @@
 #include <linux/xarray.h>
 #include <sound/control.h>
 #include <sound/core.h>
+#include <sound/info.h>
 #include <sound/pcm.h>
 #include <trace/events/rust_sample.h>
 
