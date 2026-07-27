@@ -793,3 +793,43 @@ unsafe impl Sync for HwConstraintRatnums {}
 // SAFETY: Pcm is owned by the ALSA card with appropriate locking.
 unsafe impl Send for Pcm {}
 unsafe impl Sync for Pcm {}
+
+/// A devres-managed DMA buffer allocated by the ALSA core.
+///
+/// Wraps `struct snd_dma_buffer *` returned by `snd_devm_alloc_pages`.
+/// The allocation is automatically freed when the associated device is removed.
+pub struct DmaBuffer(*mut bindings::snd_dma_buffer);
+
+impl DmaBuffer {
+    /// Allocates a DMA-coherent buffer using `snd_devm_alloc_pages`.
+    ///
+    /// Returns `Err(ENOMEM)` if allocation fails.
+    pub fn alloc_dev<Ctx: crate::device::DeviceContext>(
+        dev: &crate::device::Device<Ctx>,
+        dma_type: u32,
+        size: usize,
+    ) -> crate::error::Result<Self> {
+        // SAFETY: dev is a valid kernel device; snd_devm_alloc_pages manages
+        // its own lifetime via devres.
+        let ptr = unsafe {
+            bindings::snd_devm_alloc_pages(dev.as_raw(), dma_type as i32, size)
+        };
+        if ptr.is_null() {
+            Err(ENOMEM)
+        } else {
+            Ok(Self(ptr))
+        }
+    }
+
+    /// Returns the physical (bus) address of the DMA buffer.
+    pub fn addr(&self) -> u64 {
+        // SAFETY: self.0 is non-null and valid for the device lifetime.
+        unsafe { (*self.0).addr }
+    }
+
+    /// Returns the virtual (CPU-side) address of the DMA buffer.
+    pub fn area(&self) -> *mut u8 {
+        // SAFETY: self.0 is non-null and valid for the device lifetime.
+        unsafe { (*self.0).area as *mut u8 }
+    }
+}
