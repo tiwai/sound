@@ -230,39 +230,35 @@ impl Runtime {
 
     /// Adds a list-based hardware parameter constraint to a runtime.
     ///
-    /// The list must remain valid for the duration of the constraint (static lifetime).
-    ///
-    /// # Safety
-    ///
-    /// `constraint` must point to a static (module-lifetime) struct whose embedded
-    /// `list` pointer is also static.  The kernel stores `constraint` verbatim as
-    /// `rule->private` and dereferences it on every `hw_refine` call; a stack-
-    /// allocated struct will dangle after `open()` returns.
-    pub unsafe fn hw_constraint_list(
+    /// `constraint` must be a `static` - the kernel stores a pointer to it and
+    /// dereferences it on every `hw_refine` call.
+    pub fn hw_constraint_list(
         &self,
         cond: u32,
         var: i32,
-        constraint: &'static bindings::snd_pcm_hw_constraint_list,
+        constraint: &'static HwConstraintList,
     ) -> crate::error::Result {
+        // SAFETY: constraint is 'static with valid inner pointers
+        // guaranteed by HwConstraintList::new().
         crate::error::to_result(unsafe {
-            bindings::snd_pcm_hw_constraint_list(self.as_raw(), cond, var, constraint)
+            bindings::snd_pcm_hw_constraint_list(self.as_raw(), cond, var, &constraint.inner)
         })
     }
 
     /// Adds a ratnum-based hardware parameter constraint to a runtime.
     ///
-/// # Safety
-    ///
-    /// Same lifetime requirement as `hw_constraint_list`: `constraint` and the
-    /// `rats` array it points to must both be static.
-    pub unsafe fn hw_constraint_ratnums(
+    /// `constraint` must be a `static` - same lifetime requirement as
+    /// [`hw_constraint_list`].
+    pub fn hw_constraint_ratnums(
         &self,
         cond: u32,
         var: i32,
-        constraint: &'static bindings::snd_pcm_hw_constraint_ratnums,
+        constraint: &'static HwConstraintRatnums,
     ) -> crate::error::Result {
+        // SAFETY: constraint is 'static with valid inner pointers
+        // guaranteed by HwConstraintRatnums::new().
         crate::error::to_result(unsafe {
-            bindings::snd_pcm_hw_constraint_ratnums(self.as_raw(), cond, var, constraint)
+            bindings::snd_pcm_hw_constraint_ratnums(self.as_raw(), cond, var, &constraint.inner)
         })
     }
 }
@@ -631,7 +627,7 @@ pub fn format_name(fmt: i32) -> &'static CStr {
 ///
 /// # Invariants
 ///
-/// The stored pointer is either null or was derived from `&PcmSubstream` during
+/// The stored pointer is either null or was derived from `&Substream` during
 /// an `open` callback.  ALSA guarantees the substream object remains valid until
 /// after the matching `close` callback returns, so any non-null pointer held by
 /// this handle is safe to pass to `snd_pcm_period_elapsed` for the lifetime of
@@ -746,6 +742,53 @@ pub mod hw_param {
     /// Sample rate (`SNDRV_PCM_HW_PARAM_RATE`).
     pub const RATE: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_RATE as i32;
 }
+
+/// Safe wrapper for a list-based PCM hardware parameter constraint.
+///
+/// Construct as a `static` and pass a reference to [`hw_constraint_list`].
+pub struct HwConstraintList {
+    inner: bindings::snd_pcm_hw_constraint_list,
+}
+
+impl HwConstraintList {
+    /// Creates a new constraint list from a static rate array.
+    pub const fn new(mask: u32, list: &'static [u32]) -> Self {
+        Self {
+            inner: bindings::snd_pcm_hw_constraint_list {
+                mask,
+                count: list.len() as u32,
+                list: list.as_ptr(),
+            },
+        }
+    }
+}
+
+// SAFETY: `list` points to static immutable data; the struct itself has no
+// interior mutability.
+unsafe impl Sync for HwConstraintList {}
+
+/// Safe wrapper for a rational-number PCM hardware parameter constraint.
+///
+/// Construct as a `static` and pass a reference to [`hw_constraint_ratnums`].
+pub struct HwConstraintRatnums {
+    inner: bindings::snd_pcm_hw_constraint_ratnums,
+}
+
+impl HwConstraintRatnums {
+    /// Creates a new ratnum constraint from a static `snd_ratnum` array.
+    pub const fn new(rats: &'static [bindings::snd_ratnum]) -> Self {
+        Self {
+            inner: bindings::snd_pcm_hw_constraint_ratnums {
+                nrats: rats.len() as i32,
+                rats: rats.as_ptr(),
+            },
+        }
+    }
+}
+
+// SAFETY: `rats` points to static immutable data; the struct itself has no
+// interior mutability.
+unsafe impl Sync for HwConstraintRatnums {}
 
 // SAFETY: Pcm is owned by the ALSA card with appropriate locking.
 unsafe impl Send for Pcm {}
