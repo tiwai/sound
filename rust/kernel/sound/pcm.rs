@@ -9,7 +9,7 @@ use crate::{
     error::to_result,
     prelude::*,
     str::CStr,
-    sync::{atomic::{ordering, Atomic}},
+    sync::{atomic::{ordering, Atomic}, Arc},
     types::Opaque,
 };
 use super::card::Card;
@@ -571,6 +571,21 @@ impl Pcm {
         unsafe { (*self.as_raw()).private_data = data as *mut core::ffi::c_void };
     }
 
+    /// Sets `pcm->private_data` from an [`Arc`], transferring ownership to the PCM.
+    ///
+    /// The Arc reference count is incremented; a `private_free` callback is
+    /// installed to drop it when the PCM device is freed. The stored `*const T`
+    /// is compatible with the trampolines in [`PcmOpsTable`].
+    pub fn set_private_data_arc<T: Send + Sync + 'static>(&self, data: Arc<T>) {
+        let ptr = Arc::into_raw(data);
+        // SAFETY: ptr is a valid Arc-derived *const T; pcm_private_arc_free<T>
+        // will reconstruct and drop the Arc when the PCM is freed.
+        unsafe {
+            (*self.as_raw()).private_data = ptr as *mut core::ffi::c_void;
+            (*self.as_raw()).private_free = Some(pcm_private_arc_free::<T>);
+        }
+    }
+
     /// Sets up managed DMA buffers for all substreams.
     pub fn set_managed_buffer_all(
         &self,
@@ -793,6 +808,18 @@ unsafe impl Sync for HwConstraintRatnums {}
 // SAFETY: Pcm is owned by the ALSA card with appropriate locking.
 unsafe impl Send for Pcm {}
 unsafe impl Sync for Pcm {}
+
+/// `private_free` callback that drops the [`Arc<T>`] stored in `pcm->private_data`.
+unsafe extern "C" fn pcm_private_arc_free<T>(pcm: *mut bindings::snd_pcm) {
+    // SAFETY: private_data was set by set_private_data_arc and has not been
+    // freed yet (this callback is called exactly once by the ALSA core).
+    let ptr = unsafe { (*pcm).private_data as *const T };
+    if !ptr.is_null() {
+        // SAFETY: ptr was produced by Arc::into_raw in set_private_data_arc.
+        drop(unsafe { Arc::from_raw(ptr) });
+        unsafe { (*pcm).private_data = core::ptr::null_mut() };
+    }
+}
 
 /// A devres-managed DMA buffer allocated by the ALSA core.
 ///
