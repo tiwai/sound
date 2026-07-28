@@ -10,11 +10,13 @@ use crate::{
 };
 
 pub mod mem;
+pub mod pio;
 pub mod poll;
 pub mod register;
 pub mod resource;
 
 pub use crate::register;
+pub use pio::Pio;
 pub use resource::Resource;
 
 use register::LocatedRegister;

@@ -107,6 +107,36 @@ __rust_helper void rust_helper_writeq_relaxed(u64 value, void __iomem *addr)
 }
 #endif
 
+__rust_helper void rust_helper_outb(u8 val, unsigned int port)
+{
+	outb(val, port);
+}
+
+__rust_helper u8 rust_helper_inb(unsigned int port)
+{
+	return inb(port);
+}
+
+__rust_helper void rust_helper_outw(u16 val, unsigned int port)
+{
+	outw(val, port);
+}
+
+__rust_helper u16 rust_helper_inw(unsigned int port)
+{
+	return inw(port);
+}
+
+__rust_helper void rust_helper_outl(u32 val, unsigned int port)
+{
+	outl(val, port);
+}
+
+__rust_helper u32 rust_helper_inl(unsigned int port)
+{
+	return inl(port);
+}
+
 __rust_helper resource_size_t rust_helper_resource_size(struct resource *res)
 {
 	return resource_size(res);
