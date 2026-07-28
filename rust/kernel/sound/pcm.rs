@@ -9,6 +9,7 @@ use crate::{
     error::to_result,
     prelude::*,
     str::CStr,
+    sync::{atomic::{ordering, Atomic}},
     types::Opaque,
 };
 use super::card::Card;
@@ -621,14 +622,123 @@ pub fn format_name(fmt: i32) -> &'static CStr {
     unsafe { CStr::from_char_ptr(bindings::snd_pcm_format_name(fmt as bindings::snd_pcm_format_t)) }
 }
 
-/// Notifies ALSA that a period has elapsed given a raw substream pointer.
+/// Non-owning handle to a PCM substream, for spinlock-guarded interrupt context.
 ///
-/// # Safety
+/// Drivers that store a substream pointer under a spinlock and need to call
+/// [`period_elapsed`][Self::period_elapsed] after releasing the lock should use
+/// this type instead of a raw pointer.  The null state represents "no active
+/// stream".
 ///
-/// `ptr` must be a valid, non-null `snd_pcm_substream` pointer and the hardware
-/// must have actually completed a period.
-pub unsafe fn period_elapsed_raw(ptr: *mut bindings::snd_pcm_substream) {
-    unsafe { bindings::snd_pcm_period_elapsed(ptr) };
+/// # Invariants
+///
+/// The stored pointer is either null or was derived from `&PcmSubstream` during
+/// an `open` callback.  ALSA guarantees the substream object remains valid until
+/// after the matching `close` callback returns, so any non-null pointer held by
+/// this handle is safe to pass to `snd_pcm_period_elapsed` for the lifetime of
+/// the stream.
+#[derive(Copy, Clone)]
+pub struct SubstreamHandle(*mut bindings::snd_pcm_substream);
+
+// SAFETY: The raw pointer is only dereferenced inside period_elapsed(), which
+// is always called without holding any driver lock.
+unsafe impl Send for SubstreamHandle {}
+
+impl Default for SubstreamHandle {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl SubstreamHandle {
+    /// Creates an active handle from a substream reference.
+    pub fn new(sub: &Substream) -> Self {
+        Self(sub.as_ptr())
+    }
+
+    /// Creates a null (inactive) handle.
+    pub const fn none() -> Self {
+        Self(core::ptr::null_mut())
+    }
+
+    /// Updates this handle to point to `sub`.
+    pub fn set(&mut self, sub: &Substream) {
+        self.0 = sub.as_ptr();
+    }
+
+    /// Clears this handle to null (inactive).
+    pub fn clear(&mut self) {
+        self.0 = core::ptr::null_mut();
+    }
+
+    /// Notifies ALSA that a period has elapsed; no-op if the handle is inactive.
+    ///
+    /// Must be called without holding any driver spinlock, as ALSA internally
+    /// acquires the PCM stream lock.
+    pub fn period_elapsed(self) {
+        if !self.0.is_null() {
+            // SAFETY: The pointer was derived from a valid &Substream at open
+            // time. ALSA keeps it live through close. No driver lock is held.
+            unsafe { bindings::snd_pcm_period_elapsed(self.0) }
+        }
+    }
+}
+
+/// Atomically stored PCM substream handle, for lock-free interrupt/timer context.
+///
+/// Use this when the substream pointer must be accessed from interrupt or timer
+/// context without holding a spinlock (e.g. an hrtimer callback that needs to
+/// call [`period_elapsed`][Self::period_elapsed]).
+///
+/// # Invariants
+///
+/// The stored pointer is either null or was derived from `&Substream` during
+/// an `open` or `trigger(Start)` callback with `Release` ordering.  ALSA
+/// guarantees the substream object remains valid until after the stream is
+/// stopped and closed.
+pub struct AtomicSubstreamHandle(Atomic<*const Substream>);
+
+// SAFETY: The pointer is only dereferenced inside period_elapsed(), which
+// uses Acquire ordering and calls snd_pcm_period_elapsed() without any driver
+// lock held. Atomic<*const Substream> provides the necessary synchronisation.
+unsafe impl Send for AtomicSubstreamHandle {}
+// SAFETY: All accesses go through atomic operations; concurrent use from
+// multiple threads is safe by construction.
+unsafe impl Sync for AtomicSubstreamHandle {}
+
+impl AtomicSubstreamHandle {
+    /// Creates an inactive (null) handle.
+    pub const fn new() -> Self {
+        Self(Atomic::new(core::ptr::null()))
+    }
+
+    /// Sets this handle to point to `sub` with the given memory ordering.
+    pub fn store<Ord: ordering::ReleaseOrRelaxed>(&self, sub: &Substream, order: Ord) {
+        self.0.store(sub as *const Substream, order);
+    }
+
+    /// Clears this handle to null with the given memory ordering.
+    pub fn clear<Ord: ordering::ReleaseOrRelaxed>(&self, order: Ord) {
+        self.0.store(core::ptr::null(), order);
+    }
+
+    /// Returns `true` if a substream is currently set.
+    pub fn is_active<Ord: ordering::AcquireOrRelaxed>(&self, order: Ord) -> bool {
+        !self.0.load(order).is_null()
+    }
+
+    /// Notifies ALSA that a period has elapsed; no-op if the handle is inactive.
+    ///
+    /// Uses `order` for the atomic load.  Must be called without holding any
+    /// driver lock.
+    pub fn period_elapsed<Ord: ordering::AcquireOrRelaxed>(&self, order: Ord) {
+        let ptr = self.0.load(order);
+        if !ptr.is_null() {
+            // SAFETY: The pointer was stored from a valid &Substream with
+            // Release ordering; ALSA keeps it live through close; no driver
+            // lock is held.
+            unsafe { bindings::snd_pcm_period_elapsed(ptr.cast_mut().cast()) }
+        }
+    }
 }
 
 /// Hardware parameter variable indices (mirrors `SNDRV_PCM_HW_PARAM_*`).
