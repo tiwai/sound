@@ -12,6 +12,8 @@ use crate::{
     types::Opaque,
     ThisModule,
 };
+use core::ptr::NonNull;
+use core::ops::Deref;
 
 /// A sound card.
 ///
@@ -124,3 +126,76 @@ impl Card {
 unsafe impl Send for Card {}
 // SAFETY: All mutable access is serialized by ALSA's own locking.
 unsafe impl Sync for Card {}
+
+/// An owned, RAII-managed sound card.
+///
+/// Automatically calls `snd_card_free` on drop unless explicitly consumed via
+/// [`OwnedCard::free_when_closed`] or [`OwnedCard::free`].
+pub struct OwnedCard(NonNull<bindings::snd_card>);
+
+impl OwnedCard {
+    /// Allocates a new manually-managed sound card.
+    pub fn new<Ctx: device::DeviceContext>(
+        parent: &device::Device<Ctx>,
+        index: i32,
+        id: &CStr,
+        module: &'static ThisModule,
+    ) -> Result<Self> {
+        let mut card_ptr: *mut bindings::snd_card = core::ptr::null_mut();
+
+        // SAFETY: `parent.as_raw()` is a valid device pointer; `id` is a valid
+        // C string; `card_ptr` is a local that will be filled by the call.
+        to_result(unsafe {
+            bindings::snd_card_new(
+                parent.as_raw(),
+                index,
+                id.as_char_ptr(),
+                module.as_ptr(),
+                0,
+                &mut card_ptr,
+            )
+        })?;
+
+        // SAFETY: on success `card_ptr` is valid and non-null.
+        let non_null = NonNull::new(card_ptr).ok_or(ENOMEM)?;
+        Ok(Self(non_null))
+    }
+
+    /// Immediately frees the sound card.
+    pub fn free(self) {
+        let this = core::mem::ManuallyDrop::new(self);
+        // SAFETY: `this.0` is a valid pointer to `snd_card` owned by this struct.
+        unsafe { bindings::snd_card_free(this.0.as_ptr()) };
+    }
+
+    /// Hands the card over to ALSA. It will be freed once all userspace handles are closed.
+    pub fn free_when_closed(self) {
+        let this = core::mem::ManuallyDrop::new(self);
+        // SAFETY: `this.0` is a valid pointer to `snd_card` owned by this struct.
+        unsafe { bindings::snd_card_free_when_closed(this.0.as_ptr()) };
+    }
+}
+
+impl Drop for OwnedCard {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is a valid pointer to `snd_card` owned by this struct.
+        unsafe { bindings::snd_card_free(self.0.as_ptr()) };
+    }
+}
+
+// SAFETY: `OwnedCard` is a unique wrapper around `snd_card`. Since `Card` is Send,
+// `OwnedCard` is safe to send.
+unsafe impl Send for OwnedCard {}
+// SAFETY: `OwnedCard` is safe to share because all operations are thread-safe or serialized by ALSA core locks.
+unsafe impl Sync for OwnedCard {}
+
+impl Deref for OwnedCard {
+    type Target = Card;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: `self.0` contains a valid pointer to a `snd_card` allocated by ALSA.
+        // Since `deref` takes `&self` and ownership has not been consumed via `free` or
+        // `free_when_closed`, the card is guaranteed to be active.
+        unsafe { &*self.0.as_ptr().cast::<Card>() }
+    }
+}
