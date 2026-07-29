@@ -78,11 +78,17 @@ unsafe impl<T: Driver> driver::RegistrationOps for Adapter<T> {
         name: &'static CStr,
         module: &'static ThisModule,
     ) -> Result {
+        let pm_ops = match T::PM_OPS {
+            Some(ops) => ops,
+            None => core::ptr::null(),
+        };
+
         // SAFETY: It's safe to set the fields of `struct pci_driver` on initialization.
         unsafe {
             (*pdrv.get()).name = name.as_char_ptr();
             (*pdrv.get()).probe = Some(Self::probe_callback);
             (*pdrv.get()).remove = Some(Self::remove_callback);
+            (*pdrv.get()).driver.pm = pm_ops;
             (*pdrv.get()).id_table = T::ID_TABLE.as_ptr();
         }
 
@@ -324,6 +330,9 @@ pub trait Driver {
     fn unbind<'bound>(dev: &'bound Device<device::Core<'_>>, this: Pin<&Self::Data<'bound>>) {
         let _ = (dev, this);
     }
+
+    /// Runtime PM callbacks
+    const PM_OPS: Option<&'static bindings::dev_pm_ops> = None;
 }
 
 /// The PCI device representation.
