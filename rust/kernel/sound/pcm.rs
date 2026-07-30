@@ -313,6 +313,63 @@ impl Substream {
     }
 }
 
+/// Hardware parameters negotiated during PCM setup.
+///
+/// Wraps `struct snd_pcm_hw_params`.
+#[repr(transparent)]
+pub struct HwParams(Opaque<bindings::snd_pcm_hw_params>);
+
+impl HwParams {
+    /// Returns the raw pointer to the underlying C struct.
+    pub fn as_raw(&self) -> *mut bindings::snd_pcm_hw_params {
+        self.0.get()
+    }
+
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid, live `snd_pcm_hw_params`.
+    pub unsafe fn from_raw<'a>(ptr: *mut bindings::snd_pcm_hw_params) -> &'a HwParams {
+        // SAFETY: The caller guarantees `ptr` is valid and live for `'a`.
+        unsafe { &*ptr.cast::<HwParams>() }
+    }
+
+    /// Returns the negotiated sample rate in Hz.
+    pub fn rate(&self) -> u32 {
+        // SAFETY: `self.as_raw()` is a valid `snd_pcm_hw_params` pointer.
+        unsafe { bindings::params_rate(self.as_raw()) }
+    }
+
+    /// Returns the negotiated number of channels.
+    pub fn channels(&self) -> u32 {
+        // SAFETY: `self.as_raw()` is a valid `snd_pcm_hw_params` pointer.
+        unsafe { bindings::params_channels(self.as_raw()) }
+    }
+
+    /// Returns the negotiated sample format.
+    pub fn format(&self) -> i32 {
+        // SAFETY: `self.as_raw()` is a valid `snd_pcm_hw_params` pointer.
+        unsafe { bindings::params_format(self.as_raw()) }
+    }
+
+    /// Returns the negotiated period size in frames.
+    pub fn period_size(&self) -> u32 {
+        // SAFETY: `self.as_raw()` is a valid `snd_pcm_hw_params` pointer.
+        unsafe { bindings::params_period_size(self.as_raw()) }
+    }
+
+    /// Returns the negotiated buffer size in frames.
+    pub fn buffer_size(&self) -> u32 {
+        // SAFETY: `self.as_raw()` is a valid `snd_pcm_hw_params` pointer.
+        unsafe { bindings::params_buffer_size(self.as_raw()) }
+    }
+
+    /// Returns the negotiated number of periods.
+    pub fn periods(&self) -> u32 {
+        // SAFETY: `self.as_raw()` is a valid `snd_pcm_hw_params` pointer.
+        unsafe { bindings::params_periods(self.as_raw()) }
+    }
+}
+
 /// Implemented by driver types that provide PCM callbacks.
 ///
 /// # Safety
@@ -340,7 +397,7 @@ pub trait Ops: Send + Sync {
     fn hw_params(
         &self,
         substream: &Substream,
-        params: *mut bindings::snd_pcm_hw_params,
+        params: &HwParams,
     ) -> Result {
         let _ = (substream, params);
         Ok(())
@@ -452,7 +509,9 @@ unsafe extern "C" fn trampoline_hw_params<T: Ops>(
 ) -> core::ffi::c_int {
     let sub = unsafe { Substream::from_raw(substream) };
     let chip = unsafe { &*((*substream).private_data as *const T) };
-    match chip.hw_params(sub, params) {
+    // SAFETY: The C kernel guarantees `params` is valid and live for the duration of this call.
+    let hw_params = unsafe { HwParams::from_raw(params) };
+    match chip.hw_params(sub, hw_params) {
         Ok(()) => 0,
         Err(e) => e.to_errno(),
     }
