@@ -300,6 +300,28 @@ where
         Ok(unsafe { Self::new_uninit(flags | __GFP_ZERO)?.assume_init() })
     }
 
+    /// Constructs a new zero-initialized boxed slice of `len` elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let b = KBox::<[u8]>::new_zeroed_slice(10, GFP_KERNEL)?;
+    /// assert_eq!(b[0], 0);
+    /// # Ok::<(), Error>(())
+    /// ```
+    pub fn new_zeroed_slice(len: usize, flags: Flags) -> Result<Box<[T], A>, AllocError>
+    where
+        T: Default + Clone,
+    {
+        let buffer = super::Vec::<T, A>::from_elem(T::default(), len, flags)?;
+        let (ptr, _, _) = buffer.into_raw_parts();
+        let slice = core::ptr::slice_from_raw_parts_mut(ptr, len);
+
+        // SAFETY: `slice` points to an allocation allocated with `A` (`buffer`) and holds a valid
+        // initialized `[T]` of length `len`.
+        Ok(unsafe { Box::from_raw(slice) })
+    }
+
     /// Constructs a new `Pin<Box<T, A>>`. If `T` does not implement [`Unpin`], then `x` will be
     /// pinned in memory and can't be moved.
     #[inline]
