@@ -9,9 +9,10 @@ use crate::{
     error::to_result,
     prelude::*,
     str::CStr,
-    sync::{atomic::{ordering, Atomic}, Arc},
+    sync::{atomic::{ordering, Atomic}, Arc, ArcBorrow},
     types::Opaque,
 };
+use core::ffi::c_void;
 use super::card::Card;
 
 use core::marker::PhantomData;
@@ -261,6 +262,20 @@ impl Runtime {
             bindings::snd_pcm_hw_constraint_ratnums(self.as_raw(), cond, var, &constraint.inner)
         })
     }
+
+    /// Constrains a runtime parameter to the range \[`min`, `max`\].
+    ///
+    /// Mirrors `snd_pcm_hw_constraint_minmax()`.
+    pub fn hw_constraint_minmax(
+        &self,
+        var: i32,
+        min: u32,
+        max: u32,
+    ) -> crate::error::Result {
+        crate::error::to_result(unsafe {
+            bindings::snd_pcm_hw_constraint_minmax(self.as_raw(), var as _, min, max)
+        })
+    }
 }
 
 /// A PCM substream - represents one open audio stream.
@@ -316,6 +331,22 @@ impl Substream {
     /// Returns the raw `private_data` pointer.
     pub fn private_data(&self) -> *mut core::ffi::c_void {
         unsafe { (*self.as_raw()).private_data }
+    }
+
+    /// Returns a clone of the [`Arc<T>`] previously stored with
+    /// [`Pcm::set_private_data_arc`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `set_private_data_arc::<T>` was used when
+    /// registering the PCM this substream belongs to, and that the Arc is still
+    /// alive.
+    pub unsafe fn clone_private_arc<T: Send + Sync + 'static>(&self) -> Arc<T> {
+        let ptr = unsafe { (*self.as_raw()).private_data as *const T };
+        // SAFETY: ptr was stored by set_private_data_arc via Arc::into_raw.
+        // ArcBorrow::from_raw is non-owning and coexists with the existing owner.
+        let borrow = unsafe { ArcBorrow::from_raw(ptr) };
+        Arc::from(borrow)
     }
 }
 
@@ -373,6 +404,21 @@ impl HwParams {
     pub fn periods(&self) -> u32 {
         // SAFETY: `self.as_raw()` is a valid `snd_pcm_hw_params` pointer.
         unsafe { bindings::params_periods(self.as_raw()) }
+    }
+
+    /// Returns a view of the interval for the given hw_param variable.
+    ///
+    /// `var` must be an interval-type variable (`hw_param::RATE`,
+    /// `hw_param::CHANNELS`, `hw_param::PERIOD_TIME`, etc.).
+    pub fn interval(&self, var: i32) -> HwInterval {
+        HwInterval(unsafe { bindings::hw_param_interval(self.as_raw(), var) })
+    }
+
+    /// Returns a view of the mask for the given hw_param variable.
+    ///
+    /// `var` must be a mask-type variable (`hw_param::FORMAT`).
+    pub fn mask(&self, var: i32) -> HwMask {
+        HwMask(unsafe { bindings::hw_param_mask(self.as_raw(), var) })
     }
 }
 
@@ -839,8 +885,233 @@ impl AtomicSubstreamHandle {
 
 /// Hardware parameter variable indices (mirrors `SNDRV_PCM_HW_PARAM_*`).
 pub mod hw_param {
+    /// Sample format (`SNDRV_PCM_HW_PARAM_FORMAT`).
+    pub const FORMAT: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_FORMAT as i32;
     /// Sample rate (`SNDRV_PCM_HW_PARAM_RATE`).
     pub const RATE: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_RATE as i32;
+    /// Number of channels (`SNDRV_PCM_HW_PARAM_CHANNELS`).
+    pub const CHANNELS: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_CHANNELS as i32;
+    /// Period duration in microseconds (`SNDRV_PCM_HW_PARAM_PERIOD_TIME`).
+    pub const PERIOD_TIME: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_PERIOD_TIME as i32;
+    /// Period size in frames (`SNDRV_PCM_HW_PARAM_PERIOD_SIZE`).
+    pub const PERIOD_SIZE: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_PERIOD_SIZE as i32;
+    /// Number of periods (`SNDRV_PCM_HW_PARAM_PERIODS`).
+    pub const PERIODS: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_PERIODS as i32;
+    /// Buffer duration in microseconds (`SNDRV_PCM_HW_PARAM_BUFFER_TIME`).
+    pub const BUFFER_TIME: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_BUFFER_TIME as i32;
+    /// Buffer size in frames (`SNDRV_PCM_HW_PARAM_BUFFER_SIZE`).
+    pub const BUFFER_SIZE: i32 = crate::bindings::SNDRV_PCM_HW_PARAM_BUFFER_SIZE as i32;
+}
+
+/// Safe view of a `snd_interval` inside a `HwParams`.
+///
+/// Obtained from [`HwParams::interval`]; valid only for the duration of the
+/// enclosing [`HwRule::apply`] call.
+pub struct HwInterval(*mut bindings::snd_interval);
+
+impl HwInterval {
+    /// Returns the interval minimum.
+    pub fn min(&self) -> u32 {
+        unsafe { (*self.0).min }
+    }
+
+    /// Returns the interval maximum.
+    pub fn max(&self) -> u32 {
+        unsafe { (*self.0).max }
+    }
+
+    /// Returns true if the minimum endpoint is open (excluded).
+    pub fn openmin(&self) -> bool {
+        unsafe { (*self.0).openmin() != 0 }
+    }
+
+    /// Returns true if the maximum endpoint is open (excluded).
+    pub fn openmax(&self) -> bool {
+        unsafe { (*self.0).openmax() != 0 }
+    }
+
+    /// Clamps the minimum to `v` and clears the open-min flag.
+    pub fn set_min(&self, v: u32) {
+        unsafe {
+            (*self.0).min = v;
+            (*self.0).set_openmin(0);
+        }
+    }
+
+    /// Clamps the maximum to `v` and clears the open-max flag.
+    pub fn set_max(&self, v: u32) {
+        unsafe {
+            (*self.0).max = v;
+            (*self.0).set_openmax(0);
+        }
+    }
+
+    /// Marks the interval as empty (no valid value exists).
+    pub fn set_empty(&self) {
+        unsafe { (*self.0).set_empty(1) }
+    }
+
+    /// Returns true if the interval has been marked empty.
+    pub fn is_empty(&self) -> bool {
+        unsafe { (*self.0).empty() != 0 }
+    }
+
+    /// Returns true if `val` is a valid point in this interval.
+    ///
+    /// Mirrors `snd_interval_test()`.
+    pub fn test(&self, val: u32) -> bool {
+        let min = self.min();
+        let max = self.max();
+        if val < min || val > max {
+            return false;
+        }
+        if self.openmin() && val == min {
+            return false;
+        }
+        if self.openmax() && val == max {
+            return false;
+        }
+        true
+    }
+}
+
+/// Safe view of a `snd_mask` inside a `HwParams`.
+///
+/// Obtained from [`HwParams::mask`]; valid only for the duration of the
+/// enclosing [`HwRule::apply`] call.
+pub struct HwMask(*mut bindings::snd_mask);
+
+impl HwMask {
+    /// Returns the mask as a 64-bit bitmask (bits\[0\] | bits\[1\] << 32).
+    pub fn bits_u64(&self) -> u64 {
+        unsafe {
+            let b = &(*self.0).bits;
+            (b[0] as u64) | ((b[1] as u64) << 32)
+        }
+    }
+
+    /// ANDs the mask with `bits`; returns `true` if the mask changed.
+    ///
+    /// Returns `false` and leaves the mask empty if the result is all-zero
+    /// (no valid format remains after intersection).
+    pub fn and_u64(&self, bits: u64) -> bool {
+        unsafe {
+            let b = &mut (*self.0).bits;
+            let old0 = b[0];
+            let old1 = b[1];
+            b[0] &= bits as u32;
+            b[1] &= (bits >> 32) as u32;
+            old0 != b[0] || old1 != b[1]
+        }
+    }
+
+    /// Returns true if the mask is empty (no bits set in bits\[0..=1\]).
+    pub fn is_empty(&self) -> bool {
+        unsafe {
+            let b = &(*self.0).bits;
+            b[0] == 0 && b[1] == 0
+        }
+    }
+
+    /// Returns true if format bit `bit` is set in the mask.
+    pub fn test(&self, bit: u32) -> bool {
+        if bit >= 64 {
+            return false;
+        }
+        unsafe { (*self.0).bits[(bit / 32) as usize] & (1 << (bit % 32)) != 0 }
+    }
+}
+
+/// A trait for PCM hardware parameter constraint rules.
+///
+/// Implement this on a driver-specific type and register instances with
+/// [`Runtime::store_hw_rules`] + [`HwRuleHandle::add_rule`].
+pub trait HwRule: Send + Sync {
+    /// Applies the constraint to `params`.
+    ///
+    /// Returns `1` if any parameter interval/mask changed, `0` if unchanged,
+    /// or a negative errno if the constraint cannot be satisfied.
+    fn apply(&self, params: &HwParams) -> i32;
+}
+
+// Generic C-callback trampoline for HwRule; invisible to drivers.
+unsafe extern "C" fn hw_rule_trampoline<T: HwRule>(
+    params: *mut bindings::snd_pcm_hw_params,
+    rule: *mut bindings::snd_pcm_hw_rule,
+) -> core::ffi::c_int {
+    let obj = unsafe { &*((*rule).private as *const T) };
+    // SAFETY: params is valid for the duration of the callback.
+    obj.apply(unsafe { HwParams::from_raw(params) })
+}
+
+/// Typed handle to a heap-allocated rule set stored in a [`Runtime`].
+///
+/// Obtained from [`Runtime::store_hw_rules`]. Use [`HwRuleHandle::add_rule`]
+/// to register individual constraint callbacks without any `unsafe` at the
+/// call site.
+pub struct HwRuleHandle<T>(*mut T);
+
+// SAFETY: HwRuleHandle contains a raw pointer to a heap allocation whose
+// ownership is held by the Runtime; it is only used during the open callback
+// (single-threaded w.r.t. the runtime) and dropped when the runtime is freed.
+unsafe impl<T: Send> Send for HwRuleHandle<T> {}
+unsafe impl<T: Sync> Sync for HwRuleHandle<T> {}
+
+impl Runtime {
+    /// Transfers ownership of `rules` into the runtime's `private_data`.
+    ///
+    /// The rule set is freed automatically when the runtime is freed (including
+    /// error paths that unwind through the PCM core), so rule pointers obtained
+    /// from the returned handle are guaranteed to remain valid for the runtime's
+    /// lifetime.
+    pub fn store_hw_rules<U: Send + 'static>(&self, rules: crate::alloc::KBox<U>) -> HwRuleHandle<U> {
+        unsafe extern "C" fn free_cb<U>(rt: *mut bindings::snd_pcm_runtime) {
+            let ptr = unsafe { (*rt).private_data as *mut U };
+            // SAFETY: ptr was set from KBox::into_raw in store_hw_rules.
+            unsafe { drop(crate::alloc::KBox::from_raw(ptr)); }
+            unsafe { (*rt).private_data = core::ptr::null_mut(); }
+        }
+        let raw = crate::alloc::KBox::into_raw(rules);
+        // SAFETY: raw is a fresh heap pointer from KBox::into_raw; set_private
+        // is called exactly once per runtime.
+        unsafe { self.set_private(raw as *mut c_void, free_cb::<U>); }
+        HwRuleHandle(raw)
+    }
+}
+
+impl<T> HwRuleHandle<T> {
+    /// Registers a hw_rule callback for the field of the rule set returned by `field`.
+    ///
+    /// The rule set is already stored in the runtime (via [`Runtime::store_hw_rules`])
+    /// at a stable heap address, so this method is safe to call.
+    pub fn add_rule<R, F>(
+        &self,
+        runtime: &Runtime,
+        cond: u32,
+        var: i32,
+        field: F,
+        dep0: i32,
+        dep1: i32,
+        dep2: i32,
+        dep3: i32,
+    ) -> crate::error::Result
+    where
+        R: HwRule,
+        F: for<'a> FnOnce(&'a T) -> &'a R,
+    {
+        // SAFETY: self.0 was set from Box::into_raw in store_hw_rules; the Box
+        // is owned by the runtime's private_data and will outlive any callback.
+        let rule_ref: &R = unsafe { field(&*self.0) };
+        let rule_ptr = rule_ref as *const R as *mut c_void;
+        to_result(unsafe {
+            bindings::snd_pcm_hw_rule_add(
+                runtime.as_raw(), cond, var,
+                Some(hw_rule_trampoline::<R>),
+                rule_ptr,
+                dep0, dep1, dep2, dep3,
+            )
+        })
+    }
 }
 
 /// Safe wrapper for a list-based PCM hardware parameter constraint.
