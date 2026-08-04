@@ -172,6 +172,45 @@ impl EndpointDescriptor {
     }
 }
 
+/// USB interface association descriptor.
+///
+/// Wraps the C `struct usb_interface_assoc_descriptor`. Corresponds to
+/// USB ECN: Interface Association Descriptor.
+#[repr(transparent)]
+pub struct InterfaceAssociationDescriptor(bindings::usb_interface_assoc_descriptor);
+
+impl InterfaceAssociationDescriptor {
+    /// Returns the first interface number of the associated interfaces.
+    #[allow(non_snake_case)]
+    pub fn bFirstInterface(&self) -> u8 {
+        self.0.bFirstInterface
+    }
+
+    /// Returns the number of contiguous interfaces associated with this function.
+    #[allow(non_snake_case)]
+    pub fn bInterfaceCount(&self) -> u8 {
+        self.0.bInterfaceCount
+    }
+
+    /// Returns the class code.
+    #[allow(non_snake_case)]
+    pub fn bFunctionClass(&self) -> u8 {
+        self.0.bFunctionClass
+    }
+
+    /// Returns the subclass code.
+    #[allow(non_snake_case)]
+    pub fn bFunctionSubClass(&self) -> u8 {
+        self.0.bFunctionSubClass
+    }
+
+    /// Returns the protocol code.
+    #[allow(non_snake_case)]
+    pub fn bFunctionProtocol(&self) -> u8 {
+        self.0.bFunctionProtocol
+    }
+}
+
 /// USB control request (SETUP packet).
 ///
 /// Wraps the C `struct usb_ctrlrequest` defined in
