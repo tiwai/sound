@@ -433,6 +433,19 @@ fn do_probe(
         }
     }
 
+    // Mixer controls
+    let mixer_res = {
+        let card_guard = chip.card.lock();
+        let card_ref = card_guard.as_ref().unwrap();
+        crate::mixer::create_mixer(&chip, card_ref)
+    };
+    if let Err(e) = mixer_res {
+        pr_info!(
+            "snd_rust_usb_audio: mixer init failed ({}), continuing\n",
+            e.to_errno()
+        );
+    }
+
     // Register card (first probe only)
     if is_new {
         let ret = {
