@@ -736,6 +736,32 @@ impl Pcm {
         self.set_managed_buffer_all(bindings::SNDRV_DMA_TYPE_DEV, dev.as_raw(), size, max)
     }
 
+    /// Dynamically creates a new PCM stream for a direction, and sets up its managed buffer.
+    pub fn new_stream(
+        &self,
+        dir: StreamDir,
+        substream_count: i32,
+        dma_type: u32,
+        dev: *mut bindings::device,
+        size: usize,
+        max: usize,
+    ) -> Result {
+        to_result(unsafe {
+            bindings::snd_pcm_new_stream(self.as_raw(), dir.as_c_int(), substream_count)
+        })?;
+
+        // Set up the managed buffer for the newly created substream.
+        // SAFETY: `snd_pcm_new_stream` succeeded and created the substream.
+        let substream = unsafe { (*self.as_raw()).streams[dir.as_c_int() as usize].substream };
+        if !substream.is_null() {
+            to_result(unsafe {
+                bindings::snd_pcm_set_managed_buffer(substream, dma_type as i32, dev, size, max)
+            })?;
+        }
+
+        Ok(())
+    }
+
     /// Suspends all active substreams of a PCM device.
     ///
     /// Calls `trigger(Suspend)` on each running substream and transitions them to
