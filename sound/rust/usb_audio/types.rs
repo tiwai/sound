@@ -61,6 +61,60 @@ pub(crate) const UAC_FORMAT_TYPE_II: u8 = 0x02;
 pub(crate) const UAC_FORMAT_TYPE_III: u8 = 0x03;
 
 //
+// Quirk flags (QUIRK_FLAG_* bitmask, mirrors usbaudio.h QUIRK_TYPE_* enum)
+//
+/// Use GET_CUR for setting sample rate (some devices expect it).
+pub(crate) const QUIRK_FLAG_GET_SAMPLE_RATE: u32     = 1 << 0;
+/// Share the media device with the video driver.
+pub(crate) const QUIRK_FLAG_SHARE_MEDIA_DEVICE: u32  = 1 << 1;
+/// Samples need alignment to 4-byte boundaries.
+pub(crate) const QUIRK_FLAG_ALIGN_TRANSFER: u32      = 1 << 2;
+/// Force tx_length_quirk.
+pub(crate) const QUIRK_FLAG_TX_LENGTH: u32           = 1 << 3;
+/// Start playback stream before capture (for sync setups).
+pub(crate) const QUIRK_FLAG_PLAYBACK_FIRST: u32      = 1 << 4;
+/// Skip clock selector; go directly to clock source.
+pub(crate) const QUIRK_FLAG_SKIP_CLOCK_SELECTOR: u32 = 1 << 5;
+/// Ignore clock source validity bit.
+pub(crate) const QUIRK_FLAG_IGNORE_CLOCK_SOURCE: u32 = 1 << 6;
+/// DSD/DoP capable device (via interface DSD).
+pub(crate) const QUIRK_FLAG_ITF_USB_DSD_DAC: u32     = 1 << 7;
+/// Add delays after USB control messages.
+pub(crate) const QUIRK_FLAG_CTL_MSG_DELAY: u32       = 1 << 8;
+/// Add 1 ms delay after USB control messages.
+pub(crate) const QUIRK_FLAG_CTL_MSG_DELAY_1M: u32    = 1 << 9;
+/// Add 5 ms delay after USB control messages.
+pub(crate) const QUIRK_FLAG_CTL_MSG_DELAY_5M: u32    = 1 << 10;
+/// Add delay after set_interface call.
+pub(crate) const QUIRK_FLAG_IFACE_DELAY: u32         = 1 << 11;
+/// Validate rate table by probing each rate.
+pub(crate) const QUIRK_FLAG_VALIDATE_RATES: u32      = 1 << 12;
+/// Disable autosuspend.
+pub(crate) const QUIRK_FLAG_DISABLE_AUTOSUSPEND: u32 = 1 << 13;
+/// Ignore errors from SET_CUR for sample rate.
+pub(crate) const QUIRK_FLAG_IGNORE_CTL_ERROR: u32    = 1 << 14;
+/// Force raw DSD mode.
+pub(crate) const QUIRK_FLAG_DSD_RAW: u32             = 1 << 15;
+/// Set interface before starting streams.
+pub(crate) const QUIRK_FLAG_SET_IFACE_FIRST: u32     = 1 << 16;
+/// Generic implicit feedback (try to detect from any capture endpoint).
+pub(crate) const QUIRK_FLAG_GENERIC_IMPLICIT_FB: u32 = 1 << 17;
+/// Disable implicit feedback detection entirely.
+pub(crate) const QUIRK_FLAG_SKIP_IMPLICIT_FB: u32    = 1 << 18;
+/// Skip interface close on inactive streams.
+pub(crate) const QUIRK_FLAG_IFACE_SKIP_CLOSE: u32    = 1 << 19;
+/// Force interface reset on stream stop.
+pub(crate) const QUIRK_FLAG_FORCE_IFACE_RESET: u32   = 1 << 20;
+/// Device supports only a fixed sample rate.
+pub(crate) const QUIRK_FLAG_FIXED_RATE: u32          = 1 << 21;
+/// Microphone reports 16-bit only.
+pub(crate) const QUIRK_FLAG_MIC_RES_16: u32          = 1 << 22;
+/// Microphone reports 384 kHz only.
+pub(crate) const QUIRK_FLAG_MIC_RES_384: u32         = 1 << 23;
+/// Force minimum mute value for mixer playback.
+pub(crate) const QUIRK_FLAG_MIXER_PLAYBACK_MIN_MUTE: u32 = 1 << 24;
+
+//
 // AudioFormat - parsed representation of one USB alternate setting
 //
 /// Parsed audio format descriptor for one USB alternate setting.
