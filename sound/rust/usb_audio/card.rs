@@ -70,6 +70,8 @@ kernel::sync::global_lock! {
 pub(crate) struct UsbAudioChipState {
     pub pcm_devs: i32,
     pub ctrl_intf: *mut bindings::usb_host_interface,
+    /// Owned PCM streams (Arc reference count manages lifetime for pcm->private_data).
+    pub pcm_list: KVec<Arc<crate::stream::UsbStream>>,
     /// Owned endpoints (shared across substreams; raw ptrs stored in UsbSubstream).
     pub ep_list: KVec<KBox<crate::endpoint::UsbEndpoint>>,
     pub sample_rate_read_error: u32,
@@ -118,6 +120,182 @@ impl UsbAudioChip {
         // reference to the chip. This is valid for the lifetime of the chip.
         unsafe { &*(self.dev.as_raw() as *const _) }
     }
+}
+
+//
+// create_streams - discover AudioStreaming interfaces from the AudioControl
+// interface and parse each one.  Corresponds to snd_usb_create_streams().
+//
+/// Parse the AudioControl interface header to discover all linked streaming
+/// interfaces and register their formats.
+fn create_streams(
+    chip: &Arc<UsbAudioChip>,
+    state: &mut UsbAudioChipState,
+    card: &kernel::sound::card::Card,
+    dev: &usb::Device,
+    ctrl_iface: &usb::Interface<device::Core<'_>>,
+    ctrlif: u32,
+    usb_id: u32,
+    speed: u32,
+) -> Result<()> {
+    // Read bInterfaceProtocol from the current altsetting descriptor.
+    let protocol = ctrl_iface.cur_altsetting().protocol();
+
+    match protocol {
+        UAC_VERSION_2 | UAC_VERSION_3 => {
+            create_streams_uac2(
+                chip, state, card, dev, ctrl_iface, ctrlif, usb_id, speed,
+            )
+        },
+        _ => {
+            // UAC1 (protocol == 0x00) or unknown - fall back to UAC1 parsing.
+            create_streams_uac1(
+                chip, state, card, dev, ctrl_iface, ctrlif, usb_id, speed,
+            )
+        },
+    }
+}
+
+/// UAC1: parse the AC header descriptor's `baInterfaceNr` list.
+fn create_streams_uac1(
+    chip: &Arc<UsbAudioChip>,
+    state: &mut UsbAudioChipState,
+    card: &kernel::sound::card::Card,
+    dev: &usb::Device,
+    ctrl_iface: &usb::Interface<device::Core<'_>>,
+    ctrlif: u32,
+    usb_id: u32,
+    speed: u32,
+) -> Result<()> {
+    let extra = ctrl_iface.cur_altsetting().extra();
+    if extra.len() < 2 {
+        pr_info!("snd_rust_usb_audio: UAC1 AC interface has no extra descriptors\n");
+        return Ok(());
+    }
+
+    // Find the class-specific AC HEADER descriptor (subtype UAC_HEADER = 0x01).
+    let hdr_off = match crate::helper::find_csint_desc(extra, None, UAC_HEADER) {
+        Some(o) => o,
+        None => {
+            pr_info!("snd_rust_usb_audio: cannot find UAC_HEADER in AC interface\n");
+            return Ok(());
+        }
+    };
+    let hdr = &extra[hdr_off..];
+
+    // UAC1 AC header layout:
+    // [0] bLength, [1] bDescriptorType, [2] bDescriptorSubtype,
+    // [3..4] bcdADC, [5..6] wTotalLength, [7] bInCollection,
+    // [8..] baInterfaceNr[bInCollection]
+    if hdr.len() < 8 {
+        pr_info!("snd_rust_usb_audio: UAC_HEADER too short\n");
+        return Ok(());
+    }
+    let b_in_collection = hdr[7] as usize;
+    if b_in_collection == 0 {
+        pr_info!("snd_rust_usb_audio: UAC1 bInCollection == 0, no streaming interfaces\n");
+        return Ok(());
+    }
+    if hdr.len() < 8 + b_in_collection {
+        pr_info!("snd_rust_usb_audio: UAC_HEADER truncated\n");
+        return Ok(());
+    }
+
+    for i in 0..b_in_collection {
+        let ifnum = hdr[8 + i] as u32;
+        if ifnum == ctrlif {
+            continue; // skip the control interface itself
+        }
+        let streaming_iface = match usb::ifnum_to_if(dev, ifnum as u8) {
+            Some(p) => p,
+            None => continue,
+        };
+        // parse_audio_interface failures are non-fatal: skip bad interfaces.
+        let _ = crate::stream::parse_audio_interface(
+            chip, state, card, dev, streaming_iface, usb_id, speed,
+        );
+    }
+    Ok(())
+}
+
+/// UAC2/3: use the Interface Association Descriptor (IAD) to enumerate all
+/// interfaces belonging to the audio function.
+fn create_streams_uac2(
+    chip: &Arc<UsbAudioChip>,
+    state: &mut UsbAudioChipState,
+    card: &kernel::sound::card::Card,
+    dev: &usb::Device,
+    ctrl_iface: &usb::Interface<device::Core<'_>>,
+    ctrlif: u32,
+    usb_id: u32,
+    speed: u32,
+) -> Result<()> {
+    let assoc = ctrl_iface.intf_assoc();
+
+    match assoc {
+        None => {
+            // Firmware bug: also check the next interface (mirrors C quirk for
+            // the NuForce UDH-100 and similar devices).
+            let next_iface = match usb::ifnum_to_if(dev, (ctrlif + 1) as u8) {
+                Some(p) => p,
+                None => {
+                    pr_info!(
+                        "snd_rust_usb_audio: UAC2/3 missing IAD and no next interface\n"
+                    );
+                    return Err(EINVAL);
+                }
+            };
+            let next_assoc = match next_iface.intf_assoc() {
+                Some(a) => a,
+                None => {
+                    pr_info!("snd_rust_usb_audio: UAC2/3 interfaces need an IAD\n");
+                    return Err(EINVAL);
+                }
+            };
+            if next_assoc.bFunctionClass() != USB_CLASS_AUDIO {
+                pr_info!("snd_rust_usb_audio: UAC2/3 interfaces need an IAD\n");
+                return Err(EINVAL);
+            }
+            create_streams_uac2_with_assoc(
+                chip, state, card, dev, next_assoc, ctrlif, usb_id, speed,
+            )
+        }
+        Some(assoc) => {
+            create_streams_uac2_with_assoc(
+                chip, state, card, dev, assoc, ctrlif, usb_id, speed,
+            )
+        }
+    }
+}
+
+/// Inner helper: iterate IAD and parse each non-control interface.
+fn create_streams_uac2_with_assoc(
+    chip: &Arc<UsbAudioChip>,
+    state: &mut UsbAudioChipState,
+    card: &kernel::sound::card::Card,
+    dev: &usb::Device,
+    assoc: &usb::ch9::InterfaceAssociationDescriptor,
+    ctrlif: u32,
+    usb_id: u32,
+    speed: u32,
+) -> Result<()> {
+    let first = assoc.bFirstInterface() as u32;
+    let count = assoc.bInterfaceCount() as u32;
+
+    for i in 0..count {
+        let ifnum = first + i;
+        if ifnum == ctrlif {
+            continue;
+        }
+        let streaming_iface = match usb::ifnum_to_if(dev, ifnum as u8) {
+            Some(p) => p,
+            None => continue,
+        };
+        let _ = crate::stream::parse_audio_interface(
+            chip, state, card, dev, streaming_iface, usb_id, speed,
+        );
+    }
+    Ok(())
 }
 
 //
@@ -217,6 +395,7 @@ fn do_probe(
                 mutex <- new_mutex!(UsbAudioChipState {
                     pcm_devs:  0,
                     ctrl_intf: null_mut(),
+                    pcm_list:  KVec::new(),
                     ep_list:   KVec::new(),
                     sample_rate_read_error: 0,
                 }),
@@ -238,6 +417,19 @@ fn do_probe(
         // Set ctrl_intf on first probe of this chip.
         if state.ctrl_intf.is_null() {
             state.ctrl_intf = interface.cur_altsetting().as_raw();
+        }
+
+        // Non-fatal: log and continue if descriptor parsing fails.
+        let streams_res = {
+            let card_guard = chip.card.lock();
+            let card_ref = card_guard.as_ref().unwrap();
+            create_streams(&chip, &mut *state, card_ref, dev, interface, ctrlif, usb_id, speed)
+        };
+        if let Err(e) = streams_res {
+            pr_info!(
+                "snd_rust_usb_audio: create_streams failed ({})\n",
+                e.to_errno()
+            );
         }
     }
 
