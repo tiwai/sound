@@ -70,6 +70,8 @@ kernel::sync::global_lock! {
 pub(crate) struct UsbAudioChipState {
     pub pcm_devs: i32,
     pub ctrl_intf: *mut bindings::usb_host_interface,
+    /// Owned endpoints (shared across substreams; raw ptrs stored in UsbSubstream).
+    pub ep_list: KVec<KBox<crate::endpoint::UsbEndpoint>>,
     pub sample_rate_read_error: u32,
 }
 
@@ -215,6 +217,7 @@ fn do_probe(
                 mutex <- new_mutex!(UsbAudioChipState {
                     pcm_devs:  0,
                     ctrl_intf: null_mut(),
+                    ep_list:   KVec::new(),
                     sample_rate_read_error: 0,
                 }),
             }),
@@ -227,6 +230,16 @@ fn do_probe(
 
     // Release registry lock before slow descriptor parsing.
     drop(registry);
+
+    // Parse AudioStreaming interfaces
+    {
+        let mut state = chip.mutex.lock();
+
+        // Set ctrl_intf on first probe of this chip.
+        if state.ctrl_intf.is_null() {
+            state.ctrl_intf = interface.cur_altsetting().as_raw();
+        }
+    }
 
     // Register card (first probe only)
     if is_new {
@@ -293,6 +306,17 @@ impl usb::Driver for UsbAudioDriver {
         data: Pin<&Self::Data<'bound>>,
     ) {
         let chip = &data.chip;
+
+        // Mark shutdown on the *first* disconnect; stop all endpoints.
+        if chip.shutdown.fetch_add(1, Ordering::SeqCst) == 0 {
+            let mut state = chip.mutex.lock();
+            for ep_box in state.ep_list.iter_mut() {
+                let ep = &mut **ep_box;
+                ep.stop(false);
+                ep.sync_pending_stop();
+            }
+            drop(state);
+        }
 
         // Decrement interface counter.  When it reaches zero this is the last
         // AudioControl interface for this device - tear down the card.
