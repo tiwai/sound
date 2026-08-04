@@ -13,7 +13,8 @@ use crate::card::{UsbAudioChip, UsbAudioChipState};
 use crate::stream::{UsbStream, UsbSubstream};
 use crate::endpoint::{UsbEndpoint, UrbCtx};
 use kernel::sound::pcm::{
-    Hardware, HwParams, Ops, Substream, StreamDir, TriggerCommand,
+    hw_param, Hardware, HwInterval, HwMask, HwParams, HwRule, HwRuleHandle,
+    Ops, Substream, StreamDir, TriggerCommand,
 };
 
 fn usb_hardware() -> Hardware {
@@ -294,6 +295,286 @@ pub(crate) fn retire_capture_urb_fn(
 }
 
 //
+// PCM hw_params constraint rules
+//
+
+// Shared context for all six hw_rule callbacks.
+#[derive(Clone)]
+struct UsbHwRuleBase {
+    stream: Arc<UsbStream>,
+    dir: StreamDir,
+}
+
+impl UsbHwRuleBase {
+    fn subs(&self) -> &UsbSubstream {
+        self.stream.substream(self.dir)
+    }
+}
+
+struct RateRule(UsbHwRuleBase);
+struct ChannelsRule(UsbHwRuleBase);
+struct FormatRule(UsbHwRuleBase);
+struct PeriodTimeRule(UsbHwRuleBase);
+struct PeriodSizeRule(UsbHwRuleBase);
+struct PeriodsRule(UsbHwRuleBase);
+
+// Heap-allocated container stored in runtime->private_data via store_hw_rules.
+struct UsbHwRuleSet {
+    rate: RateRule,
+    channels: ChannelsRule,
+    format: FormatRule,
+    period_time: PeriodTimeRule,
+    period_size: PeriodSizeRule,
+    periods: PeriodsRule,
+}
+
+// Returns true if fp overlaps the current (possibly wide) hw_params constraints.
+// Mirrors hw_check_valid_format() from sound/usb/pcm.c.
+fn check_valid_format(
+    fp: &AudioFormat,
+    params: &HwParams,
+    is_full_speed: bool,
+) -> bool {
+    // Format: at least one bit must overlap.
+    let fmts = params.mask(hw_param::FORMAT);
+    if fp.formats & fmts.bits_u64() == 0 {
+        return false;
+    }
+    // Channels: fp.channels must fall within the current interval.
+    let ct = params.interval(hw_param::CHANNELS);
+    if fp.channels < ct.min() || fp.channels > ct.max() {
+        return false;
+    }
+    // Rate: fp's range must overlap the current rate interval.
+    let it = params.interval(hw_param::RATE);
+    if fp.rate_min > it.max() || (fp.rate_min == it.max() && it.openmax()) {
+        return false;
+    }
+    if fp.rate_max < it.min() || (fp.rate_max == it.min() && it.openmin()) {
+        return false;
+    }
+    // Period time: skip for full-speed (125us base doesn't apply).
+    if !is_full_speed && fp.datainterval > 0 {
+        let ptime = 125u32 * (1u32 << fp.datainterval);
+        let pt = params.interval(hw_param::PERIOD_TIME);
+        if ptime > pt.max() || (ptime == pt.max() && pt.openmax()) {
+            return false;
+        }
+    }
+    true
+}
+
+// Clamps `it` to [rmin, rmax]; returns 1 if changed, 0 unchanged, EINVAL if empty.
+// Mirrors apply_hw_params_minmax() from sound/usb/pcm.c.
+fn apply_interval(it: &HwInterval, rmin: u32, rmax: u32) -> i32 {
+    if rmin > rmax {
+        it.set_empty();
+        return EINVAL.to_errno();
+    }
+    let mut changed = 0i32;
+    if it.min() < rmin {
+        it.set_min(rmin);
+        changed = 1;
+    }
+    if it.max() > rmax {
+        it.set_max(rmax);
+        changed = 1;
+    }
+    if it.is_empty() {
+        return EINVAL.to_errno();
+    }
+    changed
+}
+
+// Intersects the format mask with `fbits`; returns 1 if changed, EINVAL if empty.
+fn apply_format_bits(mask: &HwMask, fbits: u64) -> i32 {
+    if fbits == 0 {
+        return EINVAL.to_errno();
+    }
+    let changed = mask.and_u64(fbits);
+    if mask.is_empty() {
+        return EINVAL.to_errno();
+    }
+    changed as i32
+}
+
+impl HwRule for RateRule {
+    fn apply(&self, params: &HwParams) -> i32 {
+        let subs = self.0.subs();
+        let it = params.interval(hw_param::RATE);
+        let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
+
+        // If the data endpoint is already in use at a specific rate, constrain to it.
+        if let Some(ep) = subs.data_ep() {
+            if ep.cur_rate > 0 {
+                return apply_interval(&it, ep.cur_rate, ep.cur_rate);
+            }
+        }
+        if let Some(ep) = subs.sync_ep() {
+            if ep.cur_rate > 0 {
+                return apply_interval(&it, ep.cur_rate, ep.cur_rate);
+            }
+        }
+
+        let state = self.0.stream.chip.mutex.lock();
+        let fmt_list = subs.fmt_list.access(&*state);
+        let mut rmin = u32::MAX;
+        let mut rmax = 0u32;
+        for fp in fmt_list.iter() {
+            if !check_valid_format(fp, params, is_full) {
+                continue;
+            }
+            if !fp.rate_table.is_empty() {
+                for &r in fp.rate_table.iter() {
+                    if it.test(r) {
+                        rmin = rmin.min(r);
+                        rmax = rmax.max(r);
+                    }
+                }
+            } else {
+                rmin = rmin.min(fp.rate_min);
+                rmax = rmax.max(fp.rate_max);
+            }
+        }
+        apply_interval(&it, rmin, rmax)
+    }
+}
+
+impl HwRule for ChannelsRule {
+    fn apply(&self, params: &HwParams) -> i32 {
+        let subs = self.0.subs();
+        let it = params.interval(hw_param::CHANNELS);
+        let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
+
+        let state = self.0.stream.chip.mutex.lock();
+        let fmt_list = subs.fmt_list.access(&*state);
+        let mut cmin = u32::MAX;
+        let mut cmax = 0u32;
+        for fp in fmt_list.iter() {
+            if !check_valid_format(fp, params, is_full) {
+                continue;
+            }
+            cmin = cmin.min(fp.channels);
+            cmax = cmax.max(fp.channels);
+        }
+        apply_interval(&it, cmin, cmax)
+    }
+}
+
+impl HwRule for FormatRule {
+    fn apply(&self, params: &HwParams) -> i32 {
+        let subs = self.0.subs();
+        let mask = params.mask(hw_param::FORMAT);
+        let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
+
+        let state = self.0.stream.chip.mutex.lock();
+        let fmt_list = subs.fmt_list.access(&*state);
+        let mut fbits = 0u64;
+        for fp in fmt_list.iter() {
+            if !check_valid_format(fp, params, is_full) {
+                continue;
+            }
+            fbits |= fp.formats;
+        }
+        apply_format_bits(&mask, fbits)
+    }
+}
+
+impl HwRule for PeriodTimeRule {
+    fn apply(&self, params: &HwParams) -> i32 {
+        let subs = self.0.subs();
+        let it = params.interval(hw_param::PERIOD_TIME);
+        let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
+
+        let state = self.0.stream.chip.mutex.lock();
+        let fmt_list = subs.fmt_list.access(&*state);
+        let mut min_datainterval = u8::MAX;
+        for fp in fmt_list.iter() {
+            if !check_valid_format(fp, params, is_full) {
+                continue;
+            }
+            min_datainterval = min_datainterval.min(fp.datainterval);
+        }
+        if min_datainterval == u8::MAX {
+            it.set_empty();
+            return EINVAL.to_errno();
+        }
+        let pmin = 125u32 * (1u32 << min_datainterval);
+        apply_interval(&it, pmin, u32::MAX)
+    }
+}
+
+impl HwRule for PeriodSizeRule {
+    fn apply(&self, params: &HwParams) -> i32 {
+        let subs = self.0.subs();
+        let it = params.interval(hw_param::PERIOD_SIZE);
+        let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
+
+        // If the data endpoint is already committed, constrain period size to it.
+        if let Some(ep) = subs.data_ep() {
+            if ep.cur_period_frames > 0 {
+                return apply_interval(&it, ep.cur_period_frames, ep.cur_period_frames);
+            }
+        }
+        // Check sync endpoint for implicit_fb formats.
+        let state = self.0.stream.chip.mutex.lock();
+        let fmt_list = subs.fmt_list.access(&*state);
+        let mut rmin = u32::MAX;
+        let mut rmax = 0u32;
+        for fp in fmt_list.iter() {
+            if !fp.implicit_fb || !check_valid_format(fp, params, is_full) {
+                continue;
+            }
+            if let Some(ep) = subs.sync_ep() {
+                if ep.cur_period_frames > 0 {
+                    rmin = rmin.min(ep.cur_period_frames);
+                    rmax = rmax.max(ep.cur_period_frames);
+                }
+            }
+        }
+        if rmax == 0 {
+            return 0;
+        }
+        apply_interval(&it, rmin, rmax)
+    }
+}
+
+impl HwRule for PeriodsRule {
+    fn apply(&self, params: &HwParams) -> i32 {
+        let subs = self.0.subs();
+        let it = params.interval(hw_param::PERIODS);
+        let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
+
+        // If the data endpoint is already committed, constrain periods to it.
+        if let Some(ep) = subs.data_ep() {
+            if ep.cur_buffer_periods > 0 {
+                return apply_interval(&it, ep.cur_buffer_periods, ep.cur_buffer_periods);
+            }
+        }
+        // Check sync endpoint for implicit_fb formats.
+        let state = self.0.stream.chip.mutex.lock();
+        let fmt_list = subs.fmt_list.access(&*state);
+        let mut rmin = u32::MAX;
+        let mut rmax = 0u32;
+        for fp in fmt_list.iter() {
+            if !fp.implicit_fb || !check_valid_format(fp, params, is_full) {
+                continue;
+            }
+            if let Some(ep) = subs.sync_ep() {
+                if ep.cur_buffer_periods > 0 {
+                    rmin = rmin.min(ep.cur_buffer_periods);
+                    rmax = rmax.max(ep.cur_buffer_periods);
+                }
+            }
+        }
+        if rmax == 0 {
+            return 0;
+        }
+        apply_interval(&it, rmin, rmax)
+    }
+}
+
+//
 // Endpoint lifecycle helpers
 //
 fn find_or_create_ep(
@@ -386,11 +667,14 @@ impl Ops for UsbStream {
 
         subs.pcm_substream.store(sub.as_ptr(), Ordering::Release);
 
+        let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
         let mut rates = 0u32;
         let mut rate_min = u32::MAX;
         let mut rate_max = 0u32;
         let mut ch_min = u32::MAX;
         let mut ch_max = 0u32;
+        let mut has_implicit_fb = false;
+        let mut ptmin = u32::MAX;
 
         let state = self.chip.mutex.lock();
         for fp in subs.fmt_list.access(&*state).iter() {
@@ -399,6 +683,30 @@ impl Ops for UsbStream {
             rate_max = rate_max.max(fp.rate_max);
             ch_min = ch_min.min(fp.channels);
             ch_max = ch_max.max(fp.channels);
+            if fp.implicit_fb {
+                has_implicit_fb = true;
+            }
+            // Mirrors: pt = 125 * (1 << fp->datainterval) in setup_hw_info().
+            // datainterval = 0 yields 125us (the base high-speed USB interval).
+            let pt = 125u32 * (1u32 << (fp.datainterval as u32).min(20));
+            ptmin = ptmin.min(pt);
+        }
+        drop(state);
+
+        // Full-speed devices have a fixed 1ms packet interval.
+        if is_full {
+            ptmin = 1000;
+        }
+        // If ptmin == 1000 the period_time rule adds nothing useful; skip it.
+        let param_period_time = if ptmin < 1000 {
+            hw_param::PERIOD_TIME
+        } else {
+            -1
+        };
+
+        let mut info = usb_hardware().info;
+        if has_implicit_fb {
+            info |= bindings::SNDRV_PCM_INFO_JOINT_DUPLEX;
         }
 
         let hw = Hardware {
@@ -406,11 +714,64 @@ impl Ops for UsbStream {
             rates,
             rate_min,
             rate_max,
+            info: info,
             channels_min: ch_min,
             channels_max: ch_max,
             ..usb_hardware()
         };
-        sub.runtime().set_hw(&hw);
+
+        let runtime = sub.runtime();
+        runtime.set_hw(&hw);
+
+        // SAFETY: set_private_data_arc::<UsbStream> was called when registering
+        // this PCM device, and the Arc is alive for the duration of the stream.
+        let stream: Arc<UsbStream> = unsafe { sub.clone_private_arc::<UsbStream>() };
+        let base = UsbHwRuleBase { stream, dir: sub.stream() };
+
+        let rule_set = KBox::new(UsbHwRuleSet {
+            rate:        RateRule(base.clone()),
+            channels:    ChannelsRule(base.clone()),
+            format:      FormatRule(base.clone()),
+            period_time: PeriodTimeRule(base.clone()),
+            period_size: PeriodSizeRule(base.clone()),
+            periods:     PeriodsRule(base),
+        }, GFP_KERNEL)?;
+
+        // Transfer ownership to the runtime; private_free handles cleanup.
+        let handle: HwRuleHandle<UsbHwRuleSet> = runtime.store_hw_rules(rule_set);
+
+        // Minimum period_time constraint from datainterval.
+        runtime.hw_constraint_minmax(hw_param::PERIOD_TIME, ptmin, u32::MAX)?;
+
+        // Cross-parameter consistency rules.
+        handle.add_rule(&runtime, 0, hw_param::RATE,
+            |rs| &rs.rate,
+            hw_param::RATE, hw_param::FORMAT, hw_param::CHANNELS, param_period_time)?;
+        handle.add_rule(&runtime, 0, hw_param::CHANNELS,
+            |rs| &rs.channels,
+            hw_param::CHANNELS, hw_param::FORMAT, hw_param::RATE, param_period_time)?;
+        handle.add_rule(&runtime, 0, hw_param::FORMAT,
+            |rs| &rs.format,
+            hw_param::FORMAT, hw_param::RATE, hw_param::CHANNELS, param_period_time)?;
+
+        if param_period_time >= 0 {
+            handle.add_rule(&runtime, 0, hw_param::PERIOD_TIME,
+                |rs| &rs.period_time,
+                hw_param::FORMAT, hw_param::CHANNELS, hw_param::RATE, -1)?;
+        }
+
+        // Cap period and buffer durations to 1s and 2s respectively.
+        runtime.hw_constraint_minmax(hw_param::PERIOD_TIME, 0, 1_000_000)?;
+        runtime.hw_constraint_minmax(hw_param::BUFFER_TIME, 0, 2_000_000)?;
+
+        // Implicit-feedback period_size and periods constraints.
+        handle.add_rule(&runtime, 0, hw_param::PERIOD_SIZE,
+            |rs| &rs.period_size,
+            hw_param::PERIOD_SIZE, -1, -1, -1)?;
+        handle.add_rule(&runtime, 0, hw_param::PERIODS,
+            |rs| &rs.periods,
+            hw_param::PERIODS, -1, -1, -1)?;
+
         Ok(())
     }
 
