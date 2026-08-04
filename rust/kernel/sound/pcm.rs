@@ -307,6 +307,12 @@ impl Substream {
         unsafe { bindings::snd_pcm_period_elapsed(self.as_raw()) }
     }
 
+    /// Notifies ALSA that a PCM period has elapsed while holding the stream lock.
+    pub fn period_elapsed_under_stream_lock(&self) {
+        // SAFETY: self is a valid snd_pcm_substream.
+        unsafe { bindings::snd_pcm_period_elapsed_under_stream_lock(self.as_raw()) }
+    }
+
     /// Returns the raw `private_data` pointer.
     pub fn private_data(&self) -> *mut core::ffi::c_void {
         unsafe { (*self.as_raw()).private_data }
@@ -751,6 +757,15 @@ impl SubstreamHandle {
             unsafe { bindings::snd_pcm_period_elapsed(self.0) }
         }
     }
+
+    /// Notifies ALSA that a PCM period has elapsed while holding the stream lock.
+    pub fn period_elapsed_under_stream_lock(self) {
+        if !self.0.is_null() {
+            // SAFETY: The pointer was derived from a valid &Substream at open
+            // time. ALSA keeps it live through close.
+            unsafe { bindings::snd_pcm_period_elapsed_under_stream_lock(self.0) }
+        }
+    }
 }
 
 /// Atomically stored PCM substream handle, for lock-free interrupt/timer context.
@@ -807,6 +822,17 @@ impl AtomicSubstreamHandle {
             // Release ordering; ALSA keeps it live through close; no driver
             // lock is held.
             unsafe { bindings::snd_pcm_period_elapsed(ptr.cast_mut().cast()) }
+        }
+    }
+
+    /// Notifies ALSA that a PCM period has elapsed while holding the stream lock.
+    pub fn period_elapsed_under_stream_lock<Ord: ordering::AcquireOrRelaxed>(&self, order: Ord) {
+        let ptr = self.0.load(order);
+        if !ptr.is_null() {
+            // SAFETY: The pointer was stored from a valid &Substream with
+            // Release ordering; ALSA keeps it live through close; no driver
+            // lock is held.
+            unsafe { bindings::snd_pcm_period_elapsed_under_stream_lock(ptr.cast_mut().cast()) }
         }
     }
 }
