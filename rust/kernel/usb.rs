@@ -353,7 +353,12 @@ pub struct Interface<Ctx: device::DeviceContext = device::Normal>(
 );
 
 impl<Ctx: device::DeviceContext> Interface<Ctx> {
-    fn as_raw(&self) -> *mut bindings::usb_interface {
+    /// Returns the raw underlying `struct usb_interface` pointer.
+    ///
+    /// This is needed by audio class drivers that must inspect class-specific
+    /// descriptor bytes (`extra`/`extralen`) and IAD descriptors not yet
+    /// modelled by safe abstractions.
+    pub fn as_raw(&self) -> *mut bindings::usb_interface {
         self.0.get()
     }
 
@@ -430,10 +435,33 @@ impl Interface<device::Bound> {
 pub struct HostInterface(Opaque<bindings::usb_host_interface>);
 
 impl HostInterface {
+    /// Returns the raw underlying `struct usb_host_interface` pointer.
+    ///
+    /// Required by audio class drivers for direct access to class-specific
+    /// descriptor bytes and IAD fields not exposed by safe accessors.
+    pub fn as_raw(&self) -> *mut bindings::usb_host_interface {
+        self.0.get()
+    }
+
     fn inner(&self) -> &bindings::usb_host_interface {
         // SAFETY: The type invariants guarantee that `self.0` wraps a valid
         // `struct usb_host_interface`.
-        unsafe { &*self.0.get() }
+        unsafe { &*self.as_raw() }
+    }
+
+    /// Returns the class-specific extra descriptor bytes for this alternate setting.
+    ///
+    /// Audio class drivers use these to find UAC_AS_GENERAL and UAC_FORMAT_TYPE
+    /// descriptors embedded in the interface alternate setting.
+    pub fn extra(&self) -> &[u8] {
+        let inner = self.inner();
+        if inner.extra.is_null() || inner.extralen <= 0 {
+            return &[];
+        }
+        // SAFETY: `extra` points to a valid byte array of `extralen` bytes
+        // provided by the USB core descriptor parser. We checked that the
+        // pointer is non-null and the length is positive.
+        unsafe { core::slice::from_raw_parts(inner.extra.cast(), inner.extralen as usize) }
     }
 
     /// Returns the interface descriptor.
@@ -509,6 +537,14 @@ pub enum EndpointType {
 pub struct HostEndpoint(Opaque<bindings::usb_host_endpoint>);
 
 impl HostEndpoint {
+    /// Returns the raw underlying `struct usb_host_endpoint` pointer.
+    ///
+    /// Required by audio class drivers for direct access to class-specific
+    /// extra descriptor bytes on an endpoint.
+    pub fn as_raw(&self) -> *mut bindings::usb_host_endpoint {
+        self.0.get()
+    }
+
     fn inner(&self) -> &bindings::usb_host_endpoint {
         // SAFETY: The type invariants guarantee that `self.0` wraps a valid
         // `struct usb_host_endpoint`.
@@ -788,7 +824,11 @@ impl UrbState for Active {
 pub struct Urb<T>(Opaque<bindings::urb>, PhantomData<T>);
 
 impl<T> Urb<T> {
-    fn as_raw(&self) -> *mut bindings::urb {
+    /// Returns the raw underlying `struct urb` pointer.
+    ///
+    /// Audio class drivers need direct URB access for filling TX transfer
+    /// buffers and setting ISO packet descriptor lengths before resubmission.
+    pub fn as_raw(&self) -> *mut bindings::urb {
         self.0.get()
     }
 
@@ -1278,7 +1318,11 @@ pub struct Device<Ctx: device::DeviceContext = device::Normal>(
 );
 
 impl<Ctx: device::DeviceContext> Device<Ctx> {
-    fn as_raw(&self) -> *mut bindings::usb_device {
+    /// Returns the raw underlying `struct usb_device` pointer.
+    ///
+    /// Audio class drivers require raw device access for operations not yet
+    /// covered by safe wrappers (e.g. `usb_string`, pipe constructors, IAD).
+    pub fn as_raw(&self) -> *mut bindings::usb_device {
         self.0.get()
     }
 
@@ -1291,6 +1335,21 @@ impl<Ctx: device::DeviceContext> Device<Ctx> {
     /// Returns the USB device number assigned by the bus.
     fn devnum(&self) -> u32 {
         self.inner().devnum as u32
+    }
+
+    /// Returns the vendor ID (`idVendor`) of the device.
+    pub fn vendor(&self) -> u16 {
+        u16::from_le(self.inner().descriptor.idVendor)
+    }
+
+    /// Returns the product ID (`idProduct`) of the device.
+    pub fn product(&self) -> u16 {
+        u16::from_le(self.inner().descriptor.idProduct)
+    }
+
+    /// Returns the enumerated speed of the device (`enum usb_device_speed`).
+    pub fn speed(&self) -> u32 {
+        self.inner().speed as u32
     }
 }
 
@@ -1402,6 +1461,52 @@ unsafe impl Sync for Device<device::Bound> {}
 /// # Examples
 ///
 /// ```ignore
+/// Returns the USB interface with the given interface number, if any.
+///
+/// This is a thin wrapper around `usb_ifnum_to_if`, needed by audio class
+/// drivers to look up AudioStreaming interfaces from the AudioControl interface.
+///
+/// # Safety
+///
+/// The returned reference borrows from the device; the interface pointer is
+/// valid as long as the USB device is bound.
+pub fn ifnum_to_if(dev: &Device, ifnum: u8) -> Option<&Interface> {
+    // SAFETY: `dev.as_raw()` is a valid `struct usb_device` pointer.
+    let ptr = unsafe { bindings::usb_ifnum_to_if(dev.as_raw(), u32::from(ifnum)) };
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: `usb_ifnum_to_if` returns a valid `struct usb_interface` pointer
+        // owned by the USB core; its lifetime is tied to the device.
+        Some(unsafe { &*(ptr as *const Interface) })
+    }
+}
+
+/// Reads a string descriptor from the device into `buf`.
+///
+/// Wraps `usb_string`. Returns the number of characters written on success.
+///
+/// # Safety
+///
+/// `dev` must be a valid bound USB device. The string index `idx` must be
+/// a valid string descriptor index for this device.
+pub unsafe fn usb_string(dev: &Device, idx: u8, buf: &mut [u8]) -> Result<i32> {
+    // SAFETY: Caller guarantees `dev` is valid and `idx` is a valid index.
+    let ret = unsafe {
+        bindings::usb_string(
+            dev.as_raw(),
+            i32::from(idx),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if ret >= 0 {
+        Ok(ret)
+    } else {
+        Err(kernel::error::Error::from_errno(ret))
+    }
+}
+
 /// module_usb_driver! {
 ///     type: MyDriver,
 ///     name: "Module name",
