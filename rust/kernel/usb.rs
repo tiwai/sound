@@ -37,7 +37,7 @@ use crate::{
 use core::{
     marker::PhantomData,
     mem::offset_of,
-    ops::Deref,
+    ops::{Deref, DerefMut},
     ptr::{
         self,
         NonNull, //
@@ -800,6 +800,16 @@ impl IsoPacketDescriptor {
     pub fn status(&self) -> i32 {
         self.0.status
     }
+
+    /// Sets the offset of the packet's data within the transfer buffer.
+    pub fn set_offset(&mut self, offset: u32) {
+        self.0.offset = offset;
+    }
+
+    /// Sets the length of the packet in bytes.
+    pub fn set_length(&mut self, length: u32) {
+        self.0.length = length;
+    }
 }
 
 /// Trait implemented by all URB state marker types.
@@ -850,8 +860,81 @@ impl<T> Urb<T> {
         unsafe { &*self.as_raw() }
     }
 
-    fn status(&self) -> i32 {
+    /// Returns the transfer buffer length in bytes.
+    pub fn transfer_buffer_length(&self) -> u32 {
+        self.inner().transfer_buffer_length
+    }
+
+    /// Returns the completion status.
+    pub fn status(&self) -> i32 {
         self.inner().status
+    }
+
+    /// Returns the transfer buffer as a mutable byte slice.
+    pub fn transfer_buffer_mut(&mut self) -> &mut [u8] {
+        let urb = unsafe { &mut *self.as_raw() };
+        if urb.transfer_buffer.is_null() {
+            &mut []
+        } else {
+            // SAFETY: The transfer buffer was set in `init_common`.
+            // The pointer and length are valid for the lifetime of the `Urb`.
+            unsafe {
+                slice::from_raw_parts_mut(
+                    urb.transfer_buffer as *mut u8,
+                    urb.transfer_buffer_length as usize,
+                )
+            }
+        }
+    }
+
+    /// Returns the ISO frame descriptors for this URB as a mutable slice.
+    pub fn iso_frame_descs_mut(&mut self) -> &mut [IsoPacketDescriptor] {
+        let urb = unsafe { &mut *self.as_raw() };
+        if urb.number_of_packets == 0 {
+            &mut []
+        } else {
+            let data = urb.iso_frame_desc.as_mut_ptr().cast::<IsoPacketDescriptor>();
+            // SAFETY: The `iso_frame_desc` flexible array was allocated as
+            // part of the `usb_alloc_urb` allocation. `number_of_packets`
+            // is the corresponding length.
+            unsafe { slice::from_raw_parts_mut(data, urb.number_of_packets as usize) }
+        }
+    }
+
+    /// Returns both the transfer buffer and the ISO frame descriptors as mutable slices.
+    pub fn isoc_buffers_mut(&mut self) -> (&mut [u8], &mut [IsoPacketDescriptor]) {
+        let urb = unsafe { &mut *self.as_raw() };
+        let buf = if urb.transfer_buffer.is_null() {
+            &mut []
+        } else {
+            // SAFETY: The transfer buffer is valid for transfer_buffer_length.
+            unsafe {
+                slice::from_raw_parts_mut(
+                    urb.transfer_buffer as *mut u8,
+                    urb.transfer_buffer_length as usize,
+                )
+            }
+        };
+        let descs = if urb.number_of_packets == 0 {
+            &mut []
+        } else {
+            let data = urb.iso_frame_desc.as_mut_ptr().cast::<IsoPacketDescriptor>();
+            // SAFETY: `iso_frame_desc` is valid for `number_of_packets` descriptors.
+            unsafe { slice::from_raw_parts_mut(data, urb.number_of_packets as usize) }
+        };
+        (buf, descs)
+    }
+
+    /// Sets the number of ISO packets to transfer in this URB.
+    pub fn set_number_of_packets(&mut self, num: i32) {
+        let urb = unsafe { &mut *self.as_raw() };
+        urb.number_of_packets = num;
+    }
+
+    /// Sets the transfer buffer length in bytes.
+    pub fn set_transfer_buffer_length(&mut self, len: u32) {
+        let urb = unsafe { &mut *self.as_raw() };
+        urb.transfer_buffer_length = len;
     }
 
     /// Returns a borrow of the driver-private context data, if any.
@@ -890,6 +973,13 @@ impl<T, S: UrbState> Deref for UrbHandle<T, S> {
     fn deref(&self) -> &Self::Target {
         // SAFETY: `Urb<T>` is a `#[repr(transparent)]` wrapper of `struct urb`,
         unsafe { &*(self.urb.as_ptr() as *const Urb<T>) }
+    }
+}
+
+impl<T> DerefMut for UrbHandle<T, Idle> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: The URB is idle, so it is guaranteed not to be in-flight.
+        unsafe { &mut *(self.urb.as_ptr() as *mut Urb<T>) }
     }
 }
 
@@ -1000,6 +1090,43 @@ impl<'a, T> Deref for UrbData<'a, T> {
 }
 
 impl<'a, T> UrbData<'a, T> {
+    /// Returns the pinned mutable reference to the underlying `Urb`.
+    pub fn urb_pin_mut(&mut self) -> Pin<&mut Urb<T>> {
+        self.urb.as_mut()
+    }
+
+    /// Returns a mutable reference to the underlying `Urb`.
+    pub fn urb_mut(&mut self) -> &mut Urb<T> {
+        // SAFETY: `Urb<T>` is not structurally pinned (we do not move it or project pins),
+        // so it is safe to access it mutably to modify its fields.
+        unsafe { self.urb.as_mut().get_unchecked_mut() }
+    }
+
+    /// Returns the transfer buffer as a mutable byte slice.
+    pub fn transfer_buffer_mut(&mut self) -> &mut [u8] {
+        self.urb_mut().transfer_buffer_mut()
+    }
+
+    /// Returns the ISO frame descriptors for this URB as a mutable slice.
+    pub fn iso_frame_descs_mut(&mut self) -> &mut [IsoPacketDescriptor] {
+        self.urb_mut().iso_frame_descs_mut()
+    }
+
+    /// Returns both the transfer buffer and the ISO frame descriptors as mutable slices.
+    pub fn isoc_buffers_mut(&mut self) -> (&mut [u8], &mut [IsoPacketDescriptor]) {
+        self.urb_mut().isoc_buffers_mut()
+    }
+
+    /// Sets the number of ISO packets to transfer in this URB.
+    pub fn set_number_of_packets(&mut self, num: i32) {
+        self.urb_mut().set_number_of_packets(num)
+    }
+
+    /// Sets the transfer buffer length in bytes.
+    pub fn set_transfer_buffer_length(&mut self, len: u32) {
+        self.urb_mut().set_transfer_buffer_length(len)
+    }
+
     /// Returns the number of bytes actually transferred.
     ///
     /// For isochronous URBs this is the sum of all packet
