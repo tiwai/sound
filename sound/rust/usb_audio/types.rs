@@ -61,6 +61,19 @@ pub(crate) const UAC_FORMAT_TYPE_II: u8 = 0x02;
 pub(crate) const UAC_FORMAT_TYPE_III: u8 = 0x03;
 
 //
+// Endpoint type (data vs. sync)
+//
+pub(crate) const SND_USB_ENDPOINT_TYPE_DATA: i32 = 0;
+pub(crate) const SND_USB_ENDPOINT_TYPE_SYNC: i32 = 1;
+
+//
+// Endpoint state machine
+//
+pub(crate) const EP_STATE_STOPPED: i32 = 0;
+pub(crate) const EP_STATE_RUNNING: i32 = 1;
+pub(crate) const EP_STATE_STOPPING: i32 = 2;
+
+//
 // Quirk flags (QUIRK_FLAG_* bitmask, mirrors usbaudio.h QUIRK_TYPE_* enum)
 //
 /// Use GET_CUR for setting sample rate (some devices expect it).
@@ -172,4 +185,19 @@ impl AudioFormat {
     pub(crate) fn frame_bytes(&self) -> u32 {
         self.channels * self.fmt_sz
     }
+}
+
+//
+// PacketInfo - per-packet metadata in the next_packet ring buffer
+//
+/// Describes the content of one ISO packet that is ready to submit.
+pub(crate) struct PacketInfo {
+    /// Byte offset of this packet in the transfer buffer.
+    pub offset: u32,
+    /// Number of *frames* (not bytes) in this packet.
+    pub frames: u32,
+    /// Total byte length of this packet.
+    pub bytes: u32,
+    /// Byte count actually consumed from the PCM ring buffer.
+    pub actual_length: u32,
 }
