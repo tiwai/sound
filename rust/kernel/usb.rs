@@ -357,6 +357,34 @@ impl<Ctx: device::DeviceContext> Interface<Ctx> {
         self.0.get()
     }
 
+    /// Returns the interface number (`bInterfaceNumber`).
+    pub fn interface_number(&self) -> u32 {
+        self.cur_altsetting().number() as u32
+    }
+
+    /// Returns the USB device that this interface belongs to.
+    pub fn usb_device(&self) -> &Device {
+        // SAFETY: `self.as_raw()` is valid by the type invariants.
+        let usb_dev = unsafe { bindings::interface_to_usbdev(self.as_raw()) };
+
+        // SAFETY: For a valid `struct usb_interface` pointer, the above call to
+        // `interface_to_usbdev()` guarantees to return a valid pointer to a `struct usb_device`.
+        // `Device` is `#[repr(transparent)]` over `struct usb_device`.
+        unsafe { &*(usb_dev.cast()) }
+    }
+
+    /// Returns the interface association descriptor if it exists.
+    pub fn intf_assoc(&self) -> Option<&ch9::InterfaceAssociationDescriptor> {
+        let assoc = self.inner().intf_assoc;
+        if assoc.is_null() {
+            None
+        } else {
+            // SAFETY: `assoc` is a valid pointer if non-null, owned by the USB core.
+            // `InterfaceAssociationDescriptor` is `#[repr(transparent)]` over the raw struct.
+            Some(unsafe { &*(assoc.cast()) })
+        }
+    }
+
     fn inner(&self) -> &bindings::usb_interface {
         // SAFETY: The type invariants guarantee that `self.0` wraps a valid
         // `struct usb_interface`.
@@ -444,6 +472,16 @@ impl HostInterface {
     /// Returns the interface class (`bInterfaceClass`).
     pub fn class(&self) -> InterfaceClass {
         self.desc().bInterfaceClass()
+    }
+
+    /// Returns the interface subclass (`bInterfaceSubClass`).
+    pub fn subclass(&self) -> u8 {
+        self.desc().bInterfaceSubClass()
+    }
+
+    /// Returns the interface protocol (`bInterfaceProtocol`).
+    pub fn protocol(&self) -> u8 {
+        self.desc().bInterfaceProtocol()
     }
 }
 
