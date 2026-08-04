@@ -1321,9 +1321,39 @@ impl<Ctx: device::DeviceContext> Device<Ctx> {
     /// Returns the raw underlying `struct usb_device` pointer.
     ///
     /// Audio class drivers require raw device access for operations not yet
-    /// covered by safe wrappers (e.g. `usb_string`, pipe constructors, IAD).
+    /// covered by safe wrappers (e.g. pipe constructors, IAD).
     pub fn as_raw(&self) -> *mut bindings::usb_device {
         self.0.get()
+    }
+
+    /// Reads a string descriptor from the device into `buf`.
+    ///
+    /// If `idx` is 0, it does nothing and returns `Ok(0)`.
+    ///
+    /// On success, it returns the number of bytes written to `buf` (excluding the trailing null).
+    /// The string is guaranteed to be null-terminated and UTF-8 encoded.
+    pub fn string(&self, idx: u8, buf: &mut [u8]) -> Result<usize> {
+        if idx == 0 {
+            return Ok(0);
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        // SAFETY: `self.as_raw()` returns a valid `struct usb_device` pointer by the type invariants.
+        // `idx` is checked to be non-zero and within range, and we pass a valid buffer and length.
+        let ret = unsafe {
+            bindings::usb_string(
+                self.as_raw(),
+                i32::from(idx),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+            )
+        };
+        if ret >= 0 {
+            Ok(ret as usize)
+        } else {
+            Err(Error::from_errno(ret))
+        }
     }
 
     fn inner(&self) -> &bindings::usb_device {
