@@ -465,7 +465,7 @@ impl HostInterface {
     }
 
     /// Returns the interface descriptor.
-    fn desc(&self) -> &InterfaceDescriptor {
+    pub fn desc(&self) -> &InterfaceDescriptor {
         // SAFETY: `desc` is a valid `struct usb_interface_descriptor`
         // embedded in `usb_host_interface`. `InterfaceDescriptor` is
         // `#[repr(transparent)]` over it.
@@ -552,11 +552,23 @@ impl HostEndpoint {
     }
 
     /// Returns the endpoint descriptor.
-    fn desc(&self) -> &EndpointDescriptor {
+    pub fn desc(&self) -> &EndpointDescriptor {
         // SAFETY: `desc` is a valid `struct usb_endpoint_descriptor`
         // embedded in `usb_host_endpoint`. `EndpointDescriptor` is
         // `#[repr(transparent)]` over it.
         unsafe { &*(core::ptr::from_ref(&self.inner().desc).cast()) }
+    }
+
+    /// Returns the class-specific extra descriptor bytes for this endpoint.
+    pub fn extra(&self) -> &[u8] {
+        let inner = self.inner();
+        if inner.extra.is_null() || inner.extralen <= 0 {
+            return &[];
+        }
+        // SAFETY: `extra` points to a valid byte array of `extralen` bytes
+        // provided by the USB core descriptor parser. We checked that the
+        // pointer is non-null and the length is positive.
+        unsafe { core::slice::from_raw_parts(inner.extra.cast(), inner.extralen as usize) }
     }
 
     /// Returns the direction of this endpoint (IN or OUT).
