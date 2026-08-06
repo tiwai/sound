@@ -73,5 +73,9 @@ module! {
             default: true,
             description: "Enable auto-clock selection for UAC2 devices (default: yes).",
         },
+        quirks: string {
+            default: b"",
+            description: "Custom quirk configurations (VID:PID:FLAGS;...).",
+        },
     },
 }
