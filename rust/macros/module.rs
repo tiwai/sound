@@ -141,13 +141,21 @@ impl<'a> ModInfoBuilder<'a> {
 
             let param_name = &param.name;
             let param_type = &param.ptype;
+            let param_type_path = match param_type_str.as_str() {
+                "string" => quote! { &'static ::kernel::str::BStr },
+                _ => quote! { #param_type },
+            };
             let param_default = &param.default;
+            let param_default_expr = match param_type_str.as_str() {
+                "string" => quote! { ::kernel::str::BStr::from_bytes(#param_default) },
+                _ => quote! { #param_default },
+            };
 
             self.param_ts.extend(quote! {
                 #[allow(non_upper_case_globals)]
                 pub(crate) static #param_name:
-                    ::kernel::module_param::ModuleParamAccess<#param_type> =
-                        ::kernel::module_param::ModuleParamAccess::new(#param_default);
+                    ::kernel::module_param::ModuleParamAccess<#param_type_path> =
+                        ::kernel::module_param::ModuleParamAccess::new(#param_default_expr);
 
                 const _: () = {
                     #[allow(non_upper_case_globals)]
@@ -201,6 +209,7 @@ fn param_ops_path(param_type: &str) -> Path {
         "isize" => parse_quote!(::kernel::module_param::PARAM_OPS_ISIZE),
         "usize" => parse_quote!(::kernel::module_param::PARAM_OPS_USIZE),
         "bool" => parse_quote!(::kernel::module_param::PARAM_OPS_BOOL),
+        "string" => parse_quote!(::kernel::module_param::PARAM_OPS_STRING),
         t => panic!("Unsupported parameter type {}", t),
     }
 }
