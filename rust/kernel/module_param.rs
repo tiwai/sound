@@ -111,6 +111,15 @@ impl ModuleParam for bool {
     }
 }
 
+impl ModuleParam for &'static BStr {
+    fn try_from_param_arg(arg: &BStr) -> Result<Self> {
+        // SAFETY: The parameter string argument memory is kept alive by the C
+        // kernel for the lifetime of the module.
+        let arg_static = unsafe { &*(arg as *const BStr) };
+        Ok(arg_static)
+    }
+}
+
 /// A wrapper for kernel parameters.
 ///
 /// This type is instantiated by the [`module!`] macro when module parameters are
@@ -202,3 +211,4 @@ make_param_ops!(PARAM_OPS_U64, u64);
 make_param_ops!(PARAM_OPS_ISIZE, isize);
 make_param_ops!(PARAM_OPS_USIZE, usize);
 make_param_ops!(PARAM_OPS_BOOL, bool);
+make_param_ops!(PARAM_OPS_STRING, &'static BStr);
