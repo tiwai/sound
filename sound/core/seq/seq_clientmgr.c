@@ -59,7 +59,7 @@ static DEFINE_MUTEX(register_mutex);
  * client table
  */
 static char clienttablock[SNDRV_SEQ_MAX_CLIENTS];
-static struct snd_seq_client *clienttab[SNDRV_SEQ_MAX_CLIENTS];
+static struct snd_seq_client __rcu *clienttab[SNDRV_SEQ_MAX_CLIENTS];
 static struct snd_seq_usage client_usage;
 
 /*
@@ -95,15 +95,23 @@ static inline int snd_seq_write_pool_allocated(struct snd_seq_client *client)
 	return snd_seq_total_cells(client->pool) > 0;
 }
 
-/* return pointer to client structure for specified id */
-static struct snd_seq_client *clientptr(int clientid)
+/* return pointer to client structure for specified id; call under RCU read-lock */
+static struct snd_seq_client *__clientptr(int clientid)
 {
 	if (clientid < 0 || clientid >= SNDRV_SEQ_MAX_CLIENTS) {
 		pr_debug("ALSA: seq: oops. Trying to get pointer to client %d\n",
 			   clientid);
 		return NULL;
 	}
-	return clienttab[clientid];
+	return rcu_dereference_check(clienttab[clientid],
+				    lockdep_is_held(&clients_lock));
+}
+
+/* return pointer to client structure for specified id */
+static struct snd_seq_client *clientptr(int clientid)
+{
+	guard(rcu)();
+	return __clientptr(clientid);
 }
 
 static struct snd_seq_client *client_use_ptr(int clientid, bool load_module)
@@ -115,8 +123,8 @@ static struct snd_seq_client *client_use_ptr(int clientid, bool load_module)
 			   clientid);
 		return NULL;
 	}
-	scoped_guard(spinlock_irqsave, &clients_lock) {
-		client = clientptr(clientid);
+	scoped_guard(rcu) {
+		client = __clientptr(clientid);
 		if (client)
 			return snd_seq_client_ref(client);
 		if (clienttablock[clientid])
@@ -150,8 +158,8 @@ static struct snd_seq_client *client_use_ptr(int clientid, bool load_module)
 				snd_seq_device_load_drivers();
 			}
 		}
-		scoped_guard(spinlock_irqsave, &clients_lock) {
-			client = clientptr(clientid);
+		scoped_guard(rcu) {
+			client = __clientptr(clientid);
 			if (client)
 				return snd_seq_client_ref(client);
 		}
@@ -212,7 +220,6 @@ static struct snd_seq_client *seq_create_client1(int client_index, int poolsize)
 	}
 	client->type = NO_CLIENT;
 	snd_use_lock_init(&client->use_lock);
-	rwlock_init(&client->ports_lock);
 	mutex_init(&client->ports_mutex);
 	INIT_LIST_HEAD(&client->ports_list_head);
 	mutex_init(&client->ioctl_mutex);
@@ -224,14 +231,17 @@ static struct snd_seq_client *seq_create_client1(int client_index, int poolsize)
 			for (c = SNDRV_SEQ_DYNAMIC_CLIENTS_BEGIN;
 			     c < SNDRV_SEQ_MAX_CLIENTS;
 			     c++) {
-				if (clienttab[c] || clienttablock[c])
+				if (rcu_access_pointer(clienttab[c]) || clienttablock[c])
 					continue;
-				clienttab[client->number = c] = client;
+				client->number = c;
+				rcu_assign_pointer(clienttab[c], client);
 				return client;
 			}
 		} else {
-			if (clienttab[client_index] == NULL && !clienttablock[client_index]) {
-				clienttab[client->number = client_index] = client;
+			if (rcu_access_pointer(clienttab[client_index]) == NULL &&
+			    !clienttablock[client_index]) {
+				client->number = client_index;
+				rcu_assign_pointer(clienttab[client_index], client);
 				return client;
 			}
 		}
@@ -249,10 +259,16 @@ static int seq_free_client1(struct snd_seq_client *client)
 		return 0;
 	scoped_guard(spinlock_irq, &clients_lock) {
 		clienttablock[client->number] = 1;
-		clienttab[client->number] = NULL;
+		rcu_assign_pointer(clienttab[client->number], NULL);
 	}
 	snd_seq_delete_all_ports(client);
 	snd_seq_queue_client_leave(client->number);
+	/* the client has been unpublished from the table; wait for a grace
+	 * period so that lockless readers (snd_seq_client_use_ptr()) that
+	 * observed the old pointer can no longer take a new use_lock
+	 * reference, then drain the outstanding references before freeing
+	 */
+	synchronize_rcu();
 	snd_use_lock_sync(&client->use_lock);
 	if (client->pool)
 		snd_seq_pool_delete(&client->pool);
@@ -717,10 +733,11 @@ static int __deliver_to_subscribers(struct snd_seq_client *client,
 	
 	/* lock list */
 	if (atomic)
-		read_lock(&grp->list_lock);
+		rcu_read_lock();
 	else
 		down_read_nested(&grp->list_mutex, hop);
-	list_for_each_entry(subs, &grp->list_head, src_list) {
+	hlist_for_each_entry_rcu(subs, &grp->list_head, src_list,
+				 lockdep_is_held(&grp->list_mutex)) {
 		/* both ports ready? */
 		if (atomic_read(&subs->ref_count) != 2)
 			continue;
@@ -741,7 +758,7 @@ static int __deliver_to_subscribers(struct snd_seq_client *client,
 		memcpy(event, &event_saved, saved_size);
 	}
 	if (atomic)
-		read_unlock(&grp->list_lock);
+		rcu_read_unlock();
 	else
 		up_read(&grp->list_mutex);
 	memcpy(event, &event_saved, saved_size);
@@ -1938,7 +1955,7 @@ static int snd_seq_ioctl_query_subs(struct snd_seq_client *client, void *arg)
 {
 	struct snd_seq_query_subs *subs = arg;
 	struct snd_seq_port_subs_info *group;
-	struct list_head *p;
+	struct hlist_node *p;
 	int i;
 
 	struct snd_seq_client *cptr __free(snd_seq_client) =
@@ -1965,15 +1982,15 @@ static int snd_seq_ioctl_query_subs(struct snd_seq_client *client, void *arg)
 	/* search for the subscriber */
 	subs->num_subs = group->count;
 	i = 0;
-	list_for_each(p, &group->list_head) {
+	hlist_for_each(p, &group->list_head) {
 		if (i++ == subs->index) {
 			/* found! */
 			struct snd_seq_subscribers *s;
 			if (subs->type == SNDRV_SEQ_QUERY_SUBS_READ) {
-				s = list_entry(p, struct snd_seq_subscribers, src_list);
+				s = hlist_entry(p, struct snd_seq_subscribers, src_list);
 				subs->addr = s->info.dest;
 			} else {
-				s = list_entry(p, struct snd_seq_subscribers, dest_list);
+				s = hlist_entry(p, struct snd_seq_subscribers, dest_list);
 				subs->addr = s->info.sender;
 			}
 			subs->flags = s->info.flags;
@@ -2529,19 +2546,19 @@ static void snd_seq_info_dump_subscribers(struct snd_info_buffer *buffer,
 					  struct snd_seq_port_subs_info *group,
 					  int is_src, char *msg)
 {
-	struct list_head *p;
+	struct hlist_node *p;
 	struct snd_seq_subscribers *s;
 	int count = 0;
 
 	guard(rwsem_read)(&group->list_mutex);
-	if (list_empty(&group->list_head))
+	if (hlist_empty(&group->list_head))
 		return;
 	snd_iprintf(buffer, msg);
-	list_for_each(p, &group->list_head) {
+	hlist_for_each(p, &group->list_head) {
 		if (is_src)
-			s = list_entry(p, struct snd_seq_subscribers, src_list);
+			s = hlist_entry(p, struct snd_seq_subscribers, src_list);
 		else
-			s = list_entry(p, struct snd_seq_subscribers, dest_list);
+			s = hlist_entry(p, struct snd_seq_subscribers, dest_list);
 		if (count++)
 			snd_iprintf(buffer, ", ");
 		snd_iprintf(buffer, "%d:%d",
