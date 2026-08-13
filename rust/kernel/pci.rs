@@ -468,6 +468,15 @@ impl<'a> Device<device::Core<'a>> {
         to_result(unsafe { bindings::pci_enable_device_mem(self.as_raw()) })
     }
 
+    /// Request all PCI BAR regions for this device.
+    pub fn request_all_regions(&self, name: &CStr) -> Result {
+        // SAFETY: `self.as_raw` is guaranteed to be a pointer to a valid `struct pci_dev`.
+        // `name` is a valid C-string.
+        to_result(unsafe {
+            bindings::pcim_request_all_regions(self.as_raw(), name.as_char_ptr())
+        })
+    }
+
     /// Enable bus-mastering for this device.
     #[inline]
     pub fn set_master(&self) {
