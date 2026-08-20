@@ -720,11 +720,22 @@ impl<'a, T: PMOps> PMContext<'a, T> {
     /// Enable runtime PM
     pub fn enable(&self, state: RuntimePMState) -> Result {
         Self::apply_config(self.inner.dev, &self.inner.configs);
-        match state {
+        let status_res = match state {
             RuntimePMState::RESUMED => Request::mark_active(self.inner.dev),
             RuntimePMState::SUSPENDED => Request::mark_suspended(self.inner.dev),
             _ => Err(EINVAL),
-        }?;
+        };
+        match status_res {
+            Err(EAGAIN) => {
+                Request::runtime_disable(self.inner.dev);
+                match state {
+                    RuntimePMState::RESUMED => Request::mark_active(self.inner.dev),
+                    RuntimePMState::SUSPENDED => Request::mark_suspended(self.inner.dev),
+                    _ => Err(EINVAL),
+                }?;
+            }
+            res => res?,
+        }
         Request::runtime_enable(self.inner.dev);
         Ok(())
     }
