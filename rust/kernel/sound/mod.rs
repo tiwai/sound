@@ -10,3 +10,4 @@
 pub mod card;
 
 pub use card::{Card, OwnedCard};
+pub use crate::{new_sound_card, new_owned_sound_card};
