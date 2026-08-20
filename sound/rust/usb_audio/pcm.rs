@@ -657,127 +657,139 @@ fn lowlatency_playback_available(
 }
 
 //
+fn do_open(stream: &UsbStream, sub: &Substream) -> Result {
+    let subs = stream.substream(sub.stream());
+
+    subs.pcm_substream.store(sub.as_ptr(), Ordering::Release);
+
+    let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
+    let mut rates = 0u32;
+    let mut rate_min = u32::MAX;
+    let mut rate_max = 0u32;
+    let mut ch_min = u32::MAX;
+    let mut ch_max = 0u32;
+    let mut has_implicit_fb = false;
+    let mut ptmin = u32::MAX;
+
+    let state = stream.chip.mutex.lock();
+    for fp in subs.fmt_list.access(&*state).iter() {
+        rates |= fp.rates;
+        rate_min = rate_min.min(fp.rate_min);
+        rate_max = rate_max.max(fp.rate_max);
+        ch_min = ch_min.min(fp.channels);
+        ch_max = ch_max.max(fp.channels);
+        if fp.implicit_fb {
+            has_implicit_fb = true;
+        }
+        // Mirrors: pt = 125 * (1 << fp->datainterval) in setup_hw_info().
+        // datainterval = 0 yields 125us (the base high-speed USB interval).
+        let pt = 125u32 * (1u32 << (fp.datainterval as u32).min(20));
+        ptmin = ptmin.min(pt);
+    }
+    drop(state);
+
+    // Full-speed devices have a fixed 1ms packet interval.
+    if is_full {
+        ptmin = 1000;
+    }
+    // If ptmin == 1000 the period_time rule adds nothing useful; skip it.
+    let param_period_time = if ptmin < 1000 {
+        hw_param::PERIOD_TIME
+    } else {
+        -1
+    };
+
+    let mut info = usb_hardware().info;
+    if has_implicit_fb {
+        info |= bindings::SNDRV_PCM_INFO_JOINT_DUPLEX;
+    }
+
+    let hw = Hardware {
+        formats: subs.formats.get(),
+        rates,
+        rate_min,
+        rate_max,
+        info: info,
+        channels_min: ch_min,
+        channels_max: ch_max,
+        ..usb_hardware()
+    };
+
+    let runtime = sub.runtime();
+    runtime.set_hw(&hw);
+
+    // SAFETY: set_private_data_arc::<UsbStream> was called when registering
+    // this PCM device, and the Arc is alive for the duration of the stream.
+    let stream_arc: Arc<UsbStream> = unsafe { sub.clone_private_arc::<UsbStream>() };
+    let base = UsbHwRuleBase { stream: stream_arc, dir: sub.stream() };
+
+    let rule_set = KBox::new(UsbHwRuleSet {
+        rate:        RateRule(base.clone()),
+        channels:    ChannelsRule(base.clone()),
+        format:      FormatRule(base.clone()),
+        period_time: PeriodTimeRule(base.clone()),
+        period_size: PeriodSizeRule(base.clone()),
+        periods:     PeriodsRule(base),
+    }, GFP_KERNEL)?;
+
+    // Transfer ownership to the runtime; private_free handles cleanup.
+    let handle: HwRuleHandle<UsbHwRuleSet> = runtime.store_hw_rules(rule_set);
+
+    // Minimum period_time constraint from datainterval.
+    runtime.hw_constraint_minmax(hw_param::PERIOD_TIME, ptmin, u32::MAX)?;
+
+    // Cross-parameter consistency rules.
+    handle.add_rule(&runtime, 0, hw_param::RATE,
+        |rs| &rs.rate,
+        hw_param::RATE, hw_param::FORMAT, hw_param::CHANNELS, param_period_time)?;
+    handle.add_rule(&runtime, 0, hw_param::CHANNELS,
+        |rs| &rs.channels,
+        hw_param::CHANNELS, hw_param::FORMAT, hw_param::RATE, param_period_time)?;
+    handle.add_rule(&runtime, 0, hw_param::FORMAT,
+        |rs| &rs.format,
+        hw_param::FORMAT, hw_param::RATE, hw_param::CHANNELS, param_period_time)?;
+
+    if param_period_time >= 0 {
+        handle.add_rule(&runtime, 0, hw_param::PERIOD_TIME,
+            |rs| &rs.period_time,
+            hw_param::FORMAT, hw_param::CHANNELS, hw_param::RATE, -1)?;
+    }
+
+    // Cap period and buffer durations to 1s and 2s respectively.
+    runtime.hw_constraint_minmax(hw_param::PERIOD_TIME, 0, 1_000_000)?;
+    runtime.hw_constraint_minmax(hw_param::BUFFER_TIME, 0, 2_000_000)?;
+
+    // Implicit-feedback period_size and periods constraints.
+    handle.add_rule(&runtime, 0, hw_param::PERIOD_SIZE,
+        |rs| &rs.period_size,
+        hw_param::PERIOD_SIZE, -1, -1, -1)?;
+    handle.add_rule(&runtime, 0, hw_param::PERIODS,
+        |rs| &rs.periods,
+        hw_param::PERIODS, -1, -1, -1)?;
+
+    Ok(())
+}
+
 // Ops implementation
 //
 impl Ops for UsbStream {
     const NONATOMIC: bool = true;
 
     fn open(&self, sub: &Substream) -> Result {
-        let subs = self.substream(sub.stream());
-
-        subs.pcm_substream.store(sub.as_ptr(), Ordering::Release);
-
-        let is_full = subs.speed == bindings::usb_device_speed_USB_SPEED_FULL as u32;
-        let mut rates = 0u32;
-        let mut rate_min = u32::MAX;
-        let mut rate_max = 0u32;
-        let mut ch_min = u32::MAX;
-        let mut ch_max = 0u32;
-        let mut has_implicit_fb = false;
-        let mut ptmin = u32::MAX;
-
-        let state = self.chip.mutex.lock();
-        for fp in subs.fmt_list.access(&*state).iter() {
-            rates |= fp.rates;
-            rate_min = rate_min.min(fp.rate_min);
-            rate_max = rate_max.max(fp.rate_max);
-            ch_min = ch_min.min(fp.channels);
-            ch_max = ch_max.max(fp.channels);
-            if fp.implicit_fb {
-                has_implicit_fb = true;
+        self.chip.autoresume()?;
+        match do_open(self, sub) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.chip.autosuspend();
+                Err(e)
             }
-            // Mirrors: pt = 125 * (1 << fp->datainterval) in setup_hw_info().
-            // datainterval = 0 yields 125us (the base high-speed USB interval).
-            let pt = 125u32 * (1u32 << (fp.datainterval as u32).min(20));
-            ptmin = ptmin.min(pt);
         }
-        drop(state);
-
-        // Full-speed devices have a fixed 1ms packet interval.
-        if is_full {
-            ptmin = 1000;
-        }
-        // If ptmin == 1000 the period_time rule adds nothing useful; skip it.
-        let param_period_time = if ptmin < 1000 {
-            hw_param::PERIOD_TIME
-        } else {
-            -1
-        };
-
-        let mut info = usb_hardware().info;
-        if has_implicit_fb {
-            info |= bindings::SNDRV_PCM_INFO_JOINT_DUPLEX;
-        }
-
-        let hw = Hardware {
-            formats: subs.formats.get(),
-            rates,
-            rate_min,
-            rate_max,
-            info: info,
-            channels_min: ch_min,
-            channels_max: ch_max,
-            ..usb_hardware()
-        };
-
-        let runtime = sub.runtime();
-        runtime.set_hw(&hw);
-
-        // SAFETY: set_private_data_arc::<UsbStream> was called when registering
-        // this PCM device, and the Arc is alive for the duration of the stream.
-        let stream: Arc<UsbStream> = unsafe { sub.clone_private_arc::<UsbStream>() };
-        let base = UsbHwRuleBase { stream, dir: sub.stream() };
-
-        let rule_set = KBox::new(UsbHwRuleSet {
-            rate:        RateRule(base.clone()),
-            channels:    ChannelsRule(base.clone()),
-            format:      FormatRule(base.clone()),
-            period_time: PeriodTimeRule(base.clone()),
-            period_size: PeriodSizeRule(base.clone()),
-            periods:     PeriodsRule(base),
-        }, GFP_KERNEL)?;
-
-        // Transfer ownership to the runtime; private_free handles cleanup.
-        let handle: HwRuleHandle<UsbHwRuleSet> = runtime.store_hw_rules(rule_set);
-
-        // Minimum period_time constraint from datainterval.
-        runtime.hw_constraint_minmax(hw_param::PERIOD_TIME, ptmin, u32::MAX)?;
-
-        // Cross-parameter consistency rules.
-        handle.add_rule(&runtime, 0, hw_param::RATE,
-            |rs| &rs.rate,
-            hw_param::RATE, hw_param::FORMAT, hw_param::CHANNELS, param_period_time)?;
-        handle.add_rule(&runtime, 0, hw_param::CHANNELS,
-            |rs| &rs.channels,
-            hw_param::CHANNELS, hw_param::FORMAT, hw_param::RATE, param_period_time)?;
-        handle.add_rule(&runtime, 0, hw_param::FORMAT,
-            |rs| &rs.format,
-            hw_param::FORMAT, hw_param::RATE, hw_param::CHANNELS, param_period_time)?;
-
-        if param_period_time >= 0 {
-            handle.add_rule(&runtime, 0, hw_param::PERIOD_TIME,
-                |rs| &rs.period_time,
-                hw_param::FORMAT, hw_param::CHANNELS, hw_param::RATE, -1)?;
-        }
-
-        // Cap period and buffer durations to 1s and 2s respectively.
-        runtime.hw_constraint_minmax(hw_param::PERIOD_TIME, 0, 1_000_000)?;
-        runtime.hw_constraint_minmax(hw_param::BUFFER_TIME, 0, 2_000_000)?;
-
-        // Implicit-feedback period_size and periods constraints.
-        handle.add_rule(&runtime, 0, hw_param::PERIOD_SIZE,
-            |rs| &rs.period_size,
-            hw_param::PERIOD_SIZE, -1, -1, -1)?;
-        handle.add_rule(&runtime, 0, hw_param::PERIODS,
-            |rs| &rs.periods,
-            hw_param::PERIODS, -1, -1, -1)?;
-
-        Ok(())
     }
 
     fn close(&self, sub: &Substream) -> Result {
         let subs = self.substream(sub.stream());
         subs.pcm_substream.store(core::ptr::null_mut(), Ordering::Release);
+        self.chip.autosuspend();
         Ok(())
     }
 
