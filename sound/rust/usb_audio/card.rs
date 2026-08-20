@@ -70,6 +70,7 @@ kernel::sync::global_lock! {
 pub(crate) struct UsbAudioChipState {
     pub pcm_devs: i32,
     pub ctrl_intf: *mut bindings::usb_host_interface,
+    pub ctrl_intf_ptr: *mut bindings::usb_interface,
     /// Owned PCM streams (Arc reference count manages lifetime for pcm->private_data).
     pub pcm_list: KVec<Arc<crate::stream::UsbStream>>,
     /// Owned endpoints (shared across substreams; raw ptrs stored in UsbSubstream).
@@ -119,6 +120,42 @@ impl UsbAudioChip {
         // SAFETY: The device is bound during probe, and is held alive by the
         // reference to the chip. This is valid for the lifetime of the chip.
         unsafe { &*(self.dev.as_raw() as *const _) }
+    }
+
+    pub(crate) fn autoresume(&self) -> Result {
+        if self.shutdown.load(Ordering::Acquire) != 0 {
+            return Err(ENODEV);
+        }
+        if self.active.fetch_add(1, Ordering::SeqCst) == 0 {
+            let state = self.mutex.lock();
+            let ctrl_intf = state.ctrl_intf_ptr;
+            if !ctrl_intf.is_null() {
+                // SAFETY: `ctrl_intf` is a valid `usb_interface` pointer during the driver lifetime.
+                // `usb::Interface` is a transparent wrapper of `bindings::usb_interface`.
+                let intf = unsafe { &*(ctrl_intf as *const usb::Interface) };
+                if let Err(e) = intf.autopm_get() {
+                    self.active.fetch_sub(1, Ordering::SeqCst);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn autosuspend(&self) {
+        if self.shutdown.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        if self.active.fetch_sub(1, Ordering::SeqCst) == 1 {
+            let state = self.mutex.lock();
+            let ctrl_intf = state.ctrl_intf_ptr;
+            if !ctrl_intf.is_null() {
+                // SAFETY: `ctrl_intf` is a valid `usb_interface` pointer during the driver lifetime.
+                // `usb::Interface` is a transparent wrapper of `bindings::usb_interface`.
+                let intf = unsafe { &*(ctrl_intf as *const usb::Interface) };
+                intf.autopm_put();
+            }
+        }
     }
 }
 
@@ -395,6 +432,7 @@ fn do_probe(
                 mutex <- new_mutex!(UsbAudioChipState {
                     pcm_devs:  0,
                     ctrl_intf: null_mut(),
+                    ctrl_intf_ptr: null_mut(),
                     pcm_list:  KVec::new(),
                     ep_list:   KVec::new(),
                     sample_rate_read_error: 0,
@@ -417,6 +455,7 @@ fn do_probe(
         // Set ctrl_intf on first probe of this chip.
         if state.ctrl_intf.is_null() {
             state.ctrl_intf = interface.cur_altsetting().as_raw();
+            state.ctrl_intf_ptr = interface.as_raw();
         }
 
         // Non-fatal: log and continue if descriptor parsing fails.
@@ -480,6 +519,9 @@ impl usb::Driver for UsbAudioDriver {
 
     const ID_TABLE: usb::IdTable<Self::IdInfo> = &USB_AUDIO_TABLE;
 
+    const SUPPORTS_AUTOSUSPEND: bool = true;
+    const HAS_PM: bool = true;
+
     fn probe<'bound>(
         interface: &'bound usb::Interface<device::Core<'_>>,
         _id: &usb::DeviceId,
@@ -539,5 +581,42 @@ impl usb::Driver for UsbAudioDriver {
         }
 
         pr_info!("snd_rust_usb_audio: disconnected\n");
+    }
+
+    fn suspend<'bound>(
+        _interface: &'bound usb::Interface<device::Core<'_>>,
+        data: Pin<&Self::Data<'bound>>,
+    ) -> Result {
+        let chip = &data.chip;
+        let mut state = chip.mutex.lock();
+        for ep_box in state.ep_list.iter_mut() {
+            let ep = &mut **ep_box;
+            ep.stop(false);
+            ep.sync_pending_stop();
+        }
+        drop(state);
+
+        if let Some(ref card) = *chip.card.lock() {
+            card.power_change_state(kernel::sound::card::POWER_D3HOT);
+        }
+        Ok(())
+    }
+
+    fn resume<'bound>(
+        _interface: &'bound usb::Interface<device::Core<'_>>,
+        data: Pin<&Self::Data<'bound>>,
+    ) -> Result {
+        let chip = &data.chip;
+        if let Some(ref card) = *chip.card.lock() {
+            card.power_change_state(kernel::sound::card::POWER_D0);
+        }
+        Ok(())
+    }
+
+    fn reset_resume<'bound>(
+        interface: &'bound usb::Interface<device::Core<'_>>,
+        data: Pin<&Self::Data<'bound>>,
+    ) -> Result {
+        Self::resume(interface, data)
     }
 }
