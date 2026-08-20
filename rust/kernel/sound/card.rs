@@ -199,3 +199,29 @@ impl Deref for OwnedCard {
         unsafe { &*self.0.as_ptr().cast::<Card>() }
     }
 }
+
+/// Creates a new sound card managed by the device's devres, automatically passing `&crate::THIS_MODULE`.
+///
+/// If `index` is omitted, it defaults to `-1` for automatic assignment.
+#[macro_export]
+macro_rules! new_sound_card {
+    ($parent:expr, $id:expr) => {
+        $crate::new_sound_card!($parent, -1, $id)
+    };
+    ($parent:expr, $index:expr, $id:expr) => {
+        $crate::sound::Card::new($parent, $index, $id, ::kernel::module::this_module::<crate::LocalModule>())
+    };
+}
+
+/// Creates a new manually-managed sound card, automatically passing `&crate::THIS_MODULE`.
+///
+/// If `index` is omitted, it defaults to `-1` for automatic assignment.
+#[macro_export]
+macro_rules! new_owned_sound_card {
+    ($parent:expr, $id:expr) => {
+        $crate::new_owned_sound_card!($parent, -1, $id)
+    };
+    ($parent:expr, $index:expr, $id:expr) => {
+        $crate::sound::OwnedCard::new($parent, $index, $id, ::kernel::module::this_module::<crate::LocalModule>())
+    };
+}
