@@ -244,6 +244,13 @@ pub trait CStrExt: private::Sealed {
     /// copying over the string data.
     fn to_cstring(&self) -> Result<CString, AllocError>;
 
+    /// Copies this C-string into a raw buffer, truncating and guaranteeing NUL-termination.
+    ///
+    /// # Safety
+    ///
+    /// `dst` must be valid for writing up to `cap` bytes.
+    unsafe fn copy_to_raw(&self, dst: *mut u8, cap: usize);
+
     /// Converts this [`CStr`] to its ASCII lower case equivalent in-place.
     ///
     /// ASCII letters 'A' to 'Z' are mapped to 'a' to 'z',
@@ -356,6 +363,20 @@ impl CStrExt for CStr {
 
     fn to_cstring(&self) -> Result<CString, AllocError> {
         CString::try_from(self)
+    }
+
+    unsafe fn copy_to_raw(&self, dst: *mut u8, cap: usize) {
+        if cap == 0 {
+            return;
+        }
+        let bytes = self.to_bytes_with_nul();
+        let len = bytes.len().min(cap);
+        // SAFETY: The safety preconditions for `copy_to_raw` guarantee that `dst` is valid
+        // for writing up to `cap` bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, len);
+            *dst.add(len - 1) = 0;
+        }
     }
 
     fn make_ascii_lowercase(&mut self) {
