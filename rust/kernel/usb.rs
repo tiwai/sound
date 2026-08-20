@@ -74,6 +74,14 @@ unsafe impl<T: Driver> driver::RegistrationOps for Adapter<T> {
             (*udrv.get()).name = name.as_char_ptr();
             (*udrv.get()).probe = Some(Self::probe_callback);
             (*udrv.get()).disconnect = Some(Self::disconnect_callback);
+            if T::SUPPORTS_AUTOSUSPEND {
+                (*udrv.get()).set_supports_autosuspend(1);
+            }
+            if T::HAS_PM {
+                (*udrv.get()).suspend = Some(Self::suspend_callback);
+                (*udrv.get()).resume = Some(Self::resume_callback);
+                (*udrv.get()).reset_resume = Some(Self::reset_resume_callback);
+            }
             (*udrv.get()).id_table = T::ID_TABLE.as_ptr();
         }
 
@@ -132,6 +140,69 @@ impl<T: Driver> Adapter<T> {
         let data = unsafe { dev.drvdata_borrow::<T::Data<'_>>() };
 
         T::disconnect(intf, data);
+    }
+
+    extern "C" fn suspend_callback(
+        intf: *mut bindings::usb_interface,
+        _message: bindings::pm_message_t,
+    ) -> kernel::ffi::c_int {
+        // SAFETY: The USB core only ever calls the suspend callback with a valid pointer to a
+        // `struct usb_interface`.
+        //
+        // INVARIANT: `intf` is valid for the duration of `suspend_callback()`.
+        let intf = unsafe { &*intf.cast::<Interface<device::CoreInternal<'_>>>() };
+
+        let dev: &device::Device<device::CoreInternal<'_>> = intf.as_ref();
+
+        // SAFETY: `suspend_callback` is only ever called after a successful call to
+        // `probe_callback`, hence it's guaranteed that `Device::set_drvdata()` has been called
+        // and stored a `Pin<KBox<T::Data<'_>>>`.
+        let data = unsafe { dev.drvdata_borrow::<T::Data<'_>>() };
+
+        match T::suspend(intf, data) {
+            Ok(()) => 0,
+            Err(e) => e.to_errno(),
+        }
+    }
+
+    extern "C" fn resume_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
+        // SAFETY: The USB core only ever calls the resume callback with a valid pointer to a
+        // `struct usb_interface`.
+        //
+        // INVARIANT: `intf` is valid for the duration of `resume_callback()`.
+        let intf = unsafe { &*intf.cast::<Interface<device::CoreInternal<'_>>>() };
+
+        let dev: &device::Device<device::CoreInternal<'_>> = intf.as_ref();
+
+        // SAFETY: `resume_callback` is only ever called after a successful call to
+        // `probe_callback`, hence it's guaranteed that `Device::set_drvdata()` has been called
+        // and stored a `Pin<KBox<T::Data<'_>>>`.
+        let data = unsafe { dev.drvdata_borrow::<T::Data<'_>>() };
+
+        match T::resume(intf, data) {
+            Ok(()) => 0,
+            Err(e) => e.to_errno(),
+        }
+    }
+
+    extern "C" fn reset_resume_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
+        // SAFETY: The USB core only ever calls the reset_resume callback with a valid pointer to a
+        // `struct usb_interface`.
+        //
+        // INVARIANT: `intf` is valid for the duration of `reset_resume_callback()`.
+        let intf = unsafe { &*intf.cast::<Interface<device::CoreInternal<'_>>>() };
+
+        let dev: &device::Device<device::CoreInternal<'_>> = intf.as_ref();
+
+        // SAFETY: `reset_resume_callback` is only ever called after a successful call to
+        // `probe_callback`, hence it's guaranteed that `Device::set_drvdata()` has been called
+        // and stored a `Pin<KBox<T::Data<'_>>>`.
+        let data = unsafe { dev.drvdata_borrow::<T::Data<'_>>() };
+
+        match T::reset_resume(intf, data) {
+            Ok(()) => 0,
+            Err(e) => e.to_errno(),
+        }
     }
 }
 
@@ -315,6 +386,12 @@ pub trait Driver {
     /// The table of device ids supported by the driver.
     const ID_TABLE: IdTable<Self::IdInfo>;
 
+    /// Whether the driver supports autosuspend.
+    const SUPPORTS_AUTOSUSPEND: bool = false;
+
+    /// Whether the driver implements PM (suspend/resume/reset_resume) callbacks.
+    const HAS_PM: bool = false;
+
     /// USB driver probe.
     ///
     /// Called when a new USB interface is bound to this driver.
@@ -332,6 +409,36 @@ pub trait Driver {
         interface: &'bound Interface<device::Core<'_>>,
         data: Pin<&Self::Data<'bound>>,
     );
+
+    /// USB driver suspend.
+    ///
+    /// Called when the USB interface is suspended.
+    fn suspend<'bound>(
+        _interface: &'bound Interface<device::Core<'_>>,
+        _data: Pin<&Self::Data<'bound>>,
+    ) -> Result {
+        Ok(())
+    }
+
+    /// USB driver resume.
+    ///
+    /// Called when the USB interface is resumed.
+    fn resume<'bound>(
+        _interface: &'bound Interface<device::Core<'_>>,
+        _data: Pin<&Self::Data<'bound>>,
+    ) -> Result {
+        Ok(())
+    }
+
+    /// USB driver reset resume.
+    ///
+    /// Called when the USB interface is resumed after being reset.
+    fn reset_resume<'bound>(
+        _interface: &'bound Interface<device::Core<'_>>,
+        _data: Pin<&Self::Data<'bound>>,
+    ) -> Result {
+        Ok(())
+    }
 }
 
 /// A USB interface.
@@ -415,6 +522,27 @@ impl<Ctx: device::DeviceContext> Interface<Ctx> {
                 self.inner().num_altsetting as usize,
             )
         }
+    }
+
+    /// Increment the runtime PM usage counter for this interface, resuming it if suspended.
+    ///
+    /// Corresponds to `usb_autopm_get_interface()`.
+    pub fn autopm_get(&self) -> Result {
+        // SAFETY: `self.as_raw()` returns a valid `struct usb_interface` pointer.
+        let ret = unsafe { bindings::usb_autopm_get_interface(self.as_raw()) };
+        if ret < 0 {
+            Err(Error::from_errno(ret))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Decrement the runtime PM usage counter for this interface, autosuspending it if idle.
+    ///
+    /// Corresponds to `usb_autopm_put_interface()`.
+    pub fn autopm_put(&self) {
+        // SAFETY: `self.as_raw()` returns a valid `struct usb_interface` pointer.
+        unsafe { bindings::usb_autopm_put_interface(self.as_raw()) };
     }
 }
 
