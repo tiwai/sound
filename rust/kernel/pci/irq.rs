@@ -160,6 +160,31 @@ impl<'a> IrqVectorRegistration<'a> {
         // SAFETY: `irq` is a valid IRQ number for `self.dev`, resolved from this registration.
         Ok(unsafe { IrqVector::new(IrqRequest::new(self.dev.as_ref(), irq as u32), self) })
     }
+
+    /// Resolves the [`IrqRequest`] at `index`, consuming and returning `self`.
+    ///
+    /// Unlike [`Self::index`], which returns an [`IrqVector`] whose lifetime is tied to the
+    /// borrow of `self`, this method takes ownership of `self` and returns an [`IrqRequest`]
+    /// carrying the full `'a` device lifetime.  The registration is returned alongside so the
+    /// caller can store it to maintain correct drop ordering with the [`irq::Registration`]
+    /// (for INTx interrupts the drop is a no-op; for MSI/MSI-X the caller must ensure
+    /// [`irq::Registration`] is dropped before this registration).
+    ///
+    /// Returns [`EINVAL`] if the `index` is out of bounds for the length reported by
+    /// [`Self::len()`].
+    #[inline]
+    pub fn into_irq_request(self, index: usize) -> Result<(IrqRequest<'a>, Self)> {
+        // SAFETY: `self.dev.as_raw()` is a valid pointer to a `struct pci_dev`.
+        let irq = unsafe { bindings::pci_irq_vector(self.dev.as_raw(), index as u32) };
+        if irq < 0 {
+            return Err(Error::from_errno(irq));
+        }
+
+        // SAFETY: `irq` is a valid IRQ number for `self.dev`, resolved from this registration.
+        // `self.dev` carries the full `'a` lifetime; `.as_ref()` preserves it so the returned
+        // `IrqRequest<'a>` has the correct lifetime without any borrow shortening.
+        Ok((unsafe { IrqRequest::new(self.dev.as_ref(), irq as u32) }, self))
+    }
 }
 
 impl Drop for IrqVectorRegistration<'_> {
