@@ -308,7 +308,7 @@ static int __init n64audio_probe(struct platform_device *pdev)
 	card->private_free = n64audio_free;
 
 	priv->ring_base = dma_alloc_coherent(card->dev, 32 * 1024, &priv->ring_base_dma,
-					     GFP_DMA|GFP_KERNEL);
+					     GFP_KERNEL);
 	if (!priv->ring_base)
 		return -ENOMEM;
 
