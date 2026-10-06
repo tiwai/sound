@@ -2763,17 +2763,6 @@ static void alc294_fixup_bass_speaker_15(struct hda_codec *codec,
 	}
 }
 
-/* route Speaker (0x1b) to DAC 0x02, the only DAC reachable from Bass Speaker (0x14) */
-static void alc256_fixup_honor_dra_xx_share_dac(struct hda_codec *codec,
-						const struct hda_fixup *fix, int action)
-{
-	if (action == HDA_FIXUP_ACT_PRE_PROBE) {
-		static const hda_nid_t conn[] = { 0x02 };
-
-		snd_hda_override_conn_list(codec, 0x1b, ARRAY_SIZE(conn), conn);
-	}
-}
-
 /* Hook to update amp GPIO4 for automute */
 static void alc280_hp_gpio4_automute_hook(struct hda_codec *codec,
 					  struct hda_jack_callback *jack)
@@ -4477,7 +4466,6 @@ enum {
 	ALC236_FIXUP_HP_DMIC,
 	ALC256_FIXUP_HONOR_MRB_XXX_M1020_AUDIO,
 	ALC256_FIXUP_HONOR_DRA_XX_SPEAKERS,
-	ALC256_FIXUP_HONOR_DRA_XX_SHARE_DAC,
 	ALC256_FIXUP_HONOR_DRA_XX_HEADSET_MODE,
 	ALC245_FIXUP_HP_ENVY_X360_15_FH0XXX,
 	ALC287_FIXUP_ACER_MICMUTE_LED,
@@ -7227,16 +7215,10 @@ static const struct hda_fixup alc269_fixups[] = {
 	[ALC256_FIXUP_HONOR_DRA_XX_SPEAKERS] = {
 		.type = HDA_FIXUP_PINS,
 		.v.pins = (const struct hda_pintbl[]) {
-			{ 0x14, 0x90170111 }, /* bass speakers */
+			{ 0x14, 0x90170111 }, /* tweeters (top speakers) */
 			{ 0x19, 0x03a1113c }, /* headset mic, without its own jack detect */
 			{ }
 		},
-		.chained = true,
-		.chain_id = ALC256_FIXUP_HONOR_DRA_XX_SHARE_DAC
-	},
-	[ALC256_FIXUP_HONOR_DRA_XX_SHARE_DAC] = {
-		.type = HDA_FIXUP_FUNC,
-		.v.func = alc256_fixup_honor_dra_xx_share_dac,
 		.chained = true,
 		.chain_id = ALC256_FIXUP_HONOR_DRA_XX_HEADSET_MODE
 	},
