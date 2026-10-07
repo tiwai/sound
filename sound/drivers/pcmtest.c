@@ -446,10 +446,6 @@ static snd_pcm_uframes_t snd_pcmtst_pcm_pointer(struct snd_pcm_substream *substr
 	return bytes_to_frames(substream->runtime, v_iter->buf_pos);
 }
 
-static void pcmtst_pdev_release(struct device *dev)
-{
-}
-
 static int snd_pcmtst_pcm_prepare(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -586,15 +582,14 @@ static int pcmtst_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static struct platform_device pcmtst_pdev = {
-	.name =		"pcmtest",
-	.dev.release =	pcmtst_pdev_release,
-};
+#define SND_PCMTEST_DRIVER	"pcmtest"
+
+static struct platform_device *pcmtst_pdev;
 
 static struct platform_driver pcmtst_pdrv = {
 	.probe =	pcmtst_probe,
 	.driver =	{
-		.name = "pcmtest",
+		.name = SND_PCMTEST_DRIVER,
 	},
 };
 
@@ -706,12 +701,14 @@ static int __init mod_init(void)
 	err = init_debug_files(buf_allocated);
 	if (err)
 		goto err_free_patterns;
-	err = platform_device_register(&pcmtst_pdev);
-	if (err)
+	pcmtst_pdev = platform_device_register_simple(SND_PCMTEST_DRIVER, -1, NULL, 0);
+	if (IS_ERR(pcmtst_pdev)) {
+		err = PTR_ERR(pcmtst_pdev);
 		goto err_clear_debug;
+	}
 	err = platform_driver_register(&pcmtst_pdrv);
 	if (err) {
-		platform_device_unregister(&pcmtst_pdev);
+		platform_device_unregister(pcmtst_pdev);
 		goto err_clear_debug;
 	}
 
@@ -730,7 +727,7 @@ static void __exit mod_exit(void)
 	free_pattern_buffers();
 
 	platform_driver_unregister(&pcmtst_pdrv);
-	platform_device_unregister(&pcmtst_pdev);
+	platform_device_unregister(pcmtst_pdev);
 }
 
 MODULE_DESCRIPTION("Virtual ALSA driver for PCM testing/fuzzing");
