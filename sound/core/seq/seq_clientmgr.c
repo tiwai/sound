@@ -480,11 +480,11 @@ static ssize_t snd_seq_read(struct file *file, char __user *buf, size_t count,
 	if (err < 0) {
 		if (cell)
 			snd_seq_fifo_cell_putback(fifo, cell);
-		if (err == -EAGAIN && result > 0)
-			err = 0;
 	}
 
-	return (err < 0) ? err : result;
+	if (result > 0)
+		return result;
+	return err < 0 ? err : 0;
 }
 
 
