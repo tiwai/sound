@@ -761,7 +761,7 @@ void snd_hda_codec_cleanup_for_unbind(struct hda_codec *codec)
 		/* pm_runtime_put() is called in snd_hdac_device_exit() */
 		pm_runtime_get_noresume(hda_codec_dev(codec));
 		pm_runtime_disable(hda_codec_dev(codec));
-		codec->core.registered = 0;
+		codec->core.registered = false;
 	}
 
 	snd_hda_codec_disconnect_pcms(codec);
@@ -815,7 +815,7 @@ void snd_hda_codec_register(struct hda_codec *codec)
 		pm_runtime_enable(hda_codec_dev(codec));
 		/* it was powered up in snd_hda_codec_new(), now all done */
 		snd_hda_power_down(codec);
-		codec->core.registered = 1;
+		codec->core.registered = true;
 	}
 }
 EXPORT_SYMBOL_GPL(snd_hda_codec_register);
