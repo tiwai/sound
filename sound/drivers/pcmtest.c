@@ -345,6 +345,7 @@ static void timer_timeout(struct timer_list *data)
 	v_iter = timer_container_of(v_iter, data, timer_instance);
 	substream = v_iter->substream;
 
+	guard(pcm_stream_lock_irqsave)(substream);
 	if (v_iter->suspend)
 		return;
 
@@ -358,7 +359,7 @@ static void timer_timeout(struct timer_list *data)
 	v_iter->period_pos += v_iter->b_rw;
 	if (v_iter->period_pos >= v_iter->period_bytes) {
 		v_iter->period_pos %= v_iter->period_bytes;
-		snd_pcm_period_elapsed(substream);
+		snd_pcm_period_elapsed_under_stream_lock(substream);
 	}
 
 	if (!v_iter->suspend)
@@ -443,24 +444,6 @@ static snd_pcm_uframes_t snd_pcmtst_pcm_pointer(struct snd_pcm_substream *substr
 	struct pcmtst_buf_iter *v_iter = substream->runtime->private_data;
 
 	return bytes_to_frames(substream->runtime, v_iter->buf_pos);
-}
-
-static int snd_pcmtst_free(struct pcmtst *pcmtst)
-{
-	if (!pcmtst)
-		return 0;
-	kfree(pcmtst);
-	return 0;
-}
-
-// These callbacks are required, but empty - all freeing occurs in pdev_remove
-static int snd_pcmtst_dev_free(struct snd_device *device)
-{
-	return 0;
-}
-
-static void pcmtst_pdev_release(struct device *dev)
-{
 }
 
 static int snd_pcmtst_pcm_prepare(struct snd_pcm_substream *substream)
@@ -562,40 +545,9 @@ static int snd_pcmtst_new_pcm(struct pcmtst *pcmtst)
 	return err;
 }
 
-static int snd_pcmtst_create(struct snd_card *card, struct platform_device *pdev,
-			     struct pcmtst **r_pcmtst)
-{
-	struct pcmtst *pcmtst;
-	int err;
-	static const struct snd_device_ops ops = {
-		.dev_free = snd_pcmtst_dev_free,
-	};
-
-	pcmtst = kzalloc_obj(*pcmtst);
-	if (!pcmtst)
-		return -ENOMEM;
-	pcmtst->card = card;
-	pcmtst->pdev = pdev;
-
-	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, pcmtst, &ops);
-	if (err < 0)
-		goto _err_free_chip;
-
-	err = snd_pcmtst_new_pcm(pcmtst);
-	if (err < 0)
-		goto _err_free_chip;
-
-	*r_pcmtst = pcmtst;
-	return 0;
-
-_err_free_chip:
-	snd_pcmtst_free(pcmtst);
-	return err;
-}
-
 static int pcmtst_probe(struct platform_device *pdev)
 {
-	struct snd_card *card;
+	struct snd_card *card __free(snd_card_free) = NULL;
 	struct pcmtst *pcmtst;
 	int err;
 
@@ -603,10 +555,16 @@ static int pcmtst_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	err = snd_devm_card_new(&pdev->dev, index, id, THIS_MODULE, 0, &card);
+	err = snd_devm_card_new(&pdev->dev, index, id, THIS_MODULE,
+				sizeof(*pcmtst), &card);
 	if (err < 0)
 		return err;
-	err = snd_pcmtst_create(card, pdev, &pcmtst);
+
+	pcmtst = card->private_data;
+	pcmtst->card = card;
+	pcmtst->pdev = pdev;
+
+	err = snd_pcmtst_new_pcm(pcmtst);
 	if (err < 0)
 		return err;
 
@@ -619,27 +577,19 @@ static int pcmtst_probe(struct platform_device *pdev)
 		return err;
 
 	platform_set_drvdata(pdev, pcmtst);
+	card = NULL; /* probe succeeded, don't release as error */
 
 	return 0;
 }
 
-static void pdev_remove(struct platform_device *pdev)
-{
-	struct pcmtst *pcmtst = platform_get_drvdata(pdev);
+#define SND_PCMTEST_DRIVER	"pcmtest"
 
-	snd_pcmtst_free(pcmtst);
-}
-
-static struct platform_device pcmtst_pdev = {
-	.name =		"pcmtest",
-	.dev.release =	pcmtst_pdev_release,
-};
+static struct platform_device *pcmtst_pdev;
 
 static struct platform_driver pcmtst_pdrv = {
 	.probe =	pcmtst_probe,
-	.remove =	pdev_remove,
 	.driver =	{
-		.name = "pcmtest",
+		.name = SND_PCMTEST_DRIVER,
 	},
 };
 
@@ -751,12 +701,14 @@ static int __init mod_init(void)
 	err = init_debug_files(buf_allocated);
 	if (err)
 		goto err_free_patterns;
-	err = platform_device_register(&pcmtst_pdev);
-	if (err)
+	pcmtst_pdev = platform_device_register_simple(SND_PCMTEST_DRIVER, -1, NULL, 0);
+	if (IS_ERR(pcmtst_pdev)) {
+		err = PTR_ERR(pcmtst_pdev);
 		goto err_clear_debug;
+	}
 	err = platform_driver_register(&pcmtst_pdrv);
 	if (err) {
-		platform_device_unregister(&pcmtst_pdev);
+		platform_device_unregister(pcmtst_pdev);
 		goto err_clear_debug;
 	}
 
@@ -775,7 +727,7 @@ static void __exit mod_exit(void)
 	free_pattern_buffers();
 
 	platform_driver_unregister(&pcmtst_pdrv);
-	platform_device_unregister(&pcmtst_pdev);
+	platform_device_unregister(pcmtst_pdev);
 }
 
 MODULE_DESCRIPTION("Virtual ALSA driver for PCM testing/fuzzing");
