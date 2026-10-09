@@ -2198,6 +2198,16 @@ void snd_usb_endpoint_start_quirk(struct snd_usb_endpoint *ep)
 	     ep->chip->usb_id == USB_ID(0x1852, 0x5034)) && /* T+A Dac8 */
 	    ep->syncmaxsize == 4)
 		ep->tenor_fb_quirk = 1;
+
+	/*
+	 * Mayflower ARC AMP DAC (MAG Technology USB front-end): the
+	 * feedback can get stuck at nominal+1 sample per frame, causing
+	 * pops every 1-2 sec until stream restart.  Snap implausible
+	 * feedback to nominal.
+	 */
+	if (ep->chip->usb_id == USB_ID(0x0493, 0x4170) &&
+	    ep->type == SND_USB_ENDPOINT_TYPE_SYNC)
+		ep->snap_fb_quirk = 1;
 }
 
 /* quirk applied after snd_usb_ctl_msg(); not applied during boot quirks */
