@@ -4426,6 +4426,12 @@ L:	linux-media@vger.kernel.org
 S:	Maintained
 F:	drivers/media/pci/hws/
 
+AWINIC AW88399 HDA SIDE CODEC DRIVER
+M:	Marco Giunta <marco_giunta@outlook.it>
+L:	linux-sound@vger.kernel.org
+S:	Maintained
+F:	sound/hda/codecs/side-codecs/aw88399*
+
 AWINIC AW99706 WLED BACKLIGHT DRIVER
 M:	Junjie Cao <junjie.cao@linux.dev>
 S:	Maintained
