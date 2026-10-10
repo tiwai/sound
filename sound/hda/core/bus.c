@@ -121,11 +121,15 @@ int snd_hdac_bus_exec_verb_unlocked(struct hdac_bus *bus, unsigned int addr,
 			break;
 		/* process pending verbs */
 		err = bus->ops->get_response(bus, addr, &tmp);
-		if (err)
+		if (err) {
+			snd_hdac_bus_reset_response_counter(bus, addr);
 			break;
+		}
 	}
 	if (!err && res) {
 		err = bus->ops->get_response(bus, addr, res);
+		if (err)
+			snd_hdac_bus_reset_response_counter(bus, addr);
 		trace_hda_get_response(bus, addr, *res);
 	}
 	return err;
