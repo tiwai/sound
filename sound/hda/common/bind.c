@@ -89,7 +89,11 @@ static int hda_codec_driver_probe(struct device *dev)
 	struct hda_codec *codec = dev_to_hda_codec(dev);
 	struct module *owner = dev->driver->owner;
 	struct hda_codec_driver *driver = hda_codec_to_driver(codec);
+	bool probed = false;
 	int err;
+
+	/* unsol events are still blocked until registered */
+	codec->core.unsol_disabled = false;
 
 	if (codec->bus->core.ext_ops) {
 		if (WARN_ON(!codec->bus->core.ext_ops->hdev_attach))
@@ -99,9 +103,6 @@ static int hda_codec_driver_probe(struct device *dev)
 
 	if (WARN_ON(!codec->preset))
 		return -EINVAL;
-
-	/* unsol events are still blocked until registered */
-	codec->core.unsol_disabled = false;
 
 	err = snd_hda_codec_set_name(codec, codec->preset->name);
 	if (err < 0)
@@ -122,7 +123,8 @@ static int hda_codec_driver_probe(struct device *dev)
 
 	err = driver->ops->probe(codec, codec->preset);
 	if (err < 0)
-		goto error_module_put;
+		goto error_module;
+	probed = true;
 	err = snd_hda_codec_build_pcms(codec);
 	if (err < 0)
 		goto error_module;
@@ -141,7 +143,9 @@ static int hda_codec_driver_probe(struct device *dev)
 	return 0;
 
  error_module:
-	if (driver->ops->remove)
+	snd_hdac_device_disable_unsol(&codec->core);
+	cancel_delayed_work_sync(&codec->jackpoll_work);
+	if (probed && driver->ops->remove)
 		driver->ops->remove(codec);
  error_module_put:
 	module_put(owner);
@@ -157,15 +161,15 @@ static int hda_codec_driver_remove(struct device *dev)
 	struct hda_codec *codec = dev_to_hda_codec(dev);
 	struct hda_codec_driver *driver = hda_codec_to_driver(codec);
 
+	/* stop asynchronous jack handling before freeing driver resources */
+	snd_hdac_device_disable_unsol(&codec->core);
+	cancel_delayed_work_sync(&codec->jackpoll_work);
+
 	if (codec->bus->core.ext_ops) {
 		if (WARN_ON(!codec->bus->core.ext_ops->hdev_detach))
 			return -EINVAL;
 		return codec->bus->core.ext_ops->hdev_detach(&codec->core);
 	}
-
-	/* stop asynchronous jack handling before freeing driver resources */
-	snd_hdac_device_disable_unsol(&codec->core);
-	cancel_delayed_work_sync(&codec->jackpoll_work);
 
 	snd_hda_codec_disconnect_pcms(codec);
 	snd_hda_jack_tbl_disconnect(codec);
