@@ -46,83 +46,6 @@
 #define TAS2563_CAL_TLIM		TASDEVICE_REG(0, 0x10, 0x14)
 #define TAS2563_CAL_R0			TASDEVICE_REG(0, 0x0f, 0x34)
 
-/*
- * TAS2563 Post-Firmware ASI Configuration.
- *
- * The DSP firmware loading can overwrite the ASI (Audio Serial Interface)
- * registers that configure the I2S/TDM audio path to the amplifier.
- * This function re-applies the correct ASI configuration after firmware load,
- * matching the reference initialization sequence used by the vendor script:
- *   - Software reset
- *   - ASI_CFG  = 0x09 (I2S mode, master/slave config)
- *   - ASI_SR   = 0x02 (sample rate divider for 48 kHz)
- *   - ASI_DA   = 0xf1 (data alignment / slot assignment)
- *   - ASI_TDM  = 0x02 (TDM mode select)
- *   - ASI_DL   = 0x00 (delay line off)
- *   - ASI_SLOT = 0x99 (slot enable mask for 2-channel stereo)
- *   - CHNL_0   = 0x02 (channel mapping)
- *   - ASI_FS   = 0x1e or 0x2e (frame sync, device-specific: bit4 selects
- *                which of the two devices is the "primary" for FS generation)
- *   - ASI_APPLY= 0x00 (trigger configuration update)
- */
-static void tas2563_post_fw_init(struct tasdevice_priv *tas_priv)
-{
-	int i, ret;
-
-	dev_info(tas_priv->dev, "%s: ndev=%d, chip_id=%d\n",
-		 __func__, tas_priv->ndev, tas_priv->chip_id);
-
-	for (i = 0; i < tas_priv->ndev; i++) {
-		struct tasdevice *tasdev = &tas_priv->tasdevice[i];
-		u8 fs_val;
-
-		dev_info(tas_priv->dev,
-			 "%s: device[%d] dev_addr=0x%02x\n",
-			 __func__, i, tasdev->dev_addr);
-
-		/* Step 1: Software reset (matches script: 0x01 = 0x01) */
-		ret = tasdevice_dev_write(tas_priv, i, TASDEVICE_REG_SWRESET,
-					  TASDEVICE_REG_SWRESET_RESET);
-		dev_info(tas_priv->dev,
-			 "%s: chn=%d SWRESET ret=%d\n", __func__, i, ret);
-		usleep_range(1000, 2000);
-
-		/* Step 2: ASI configuration registers */
-		ret = tasdevice_dev_write(tas_priv, i, TAS2563_ASI_CFG_REG, 0x09);
-		dev_info(tas_priv->dev, "%s: chn=%d ASI_CFG=0x09 ret=%d\n", __func__, i, ret);
-
-		ret = tasdevice_dev_write(tas_priv, i, TAS2563_ASI_SR_REG, 0x02);
-		dev_info(tas_priv->dev, "%s: chn=%d ASI_SR=0x02 ret=%d\n", __func__, i, ret);
-
-		ret = tasdevice_dev_write(tas_priv, i, TAS2563_ASI_DA_REG, 0xf1);
-		dev_info(tas_priv->dev, "%s: chn=%d ASI_DA=0xf1 ret=%d\n", __func__, i, ret);
-
-		ret = tasdevice_dev_write(tas_priv, i, TAS2563_ASI_TDM_REG, 0x02);
-		dev_info(tas_priv->dev, "%s: chn=%d ASI_TDM=0x02 ret=%d\n", __func__, i, ret);
-
-		ret = tasdevice_dev_write(tas_priv, i, TAS2563_ASI_DL_REG, 0x00);
-		dev_info(tas_priv->dev, "%s: chn=%d ASI_DL=0x00 ret=%d\n", __func__, i, ret);
-
-		ret = tasdevice_dev_write(tas_priv, i, TAS2563_ASI_SLOT_REG, 0x99);
-		dev_info(tas_priv->dev, "%s: chn=%d ASI_SLOT=0x99 ret=%d\n", __func__, i, ret);
-
-		ret = tasdevice_dev_write(tas_priv, i, TAS2781_PRM_CHNL_0_REG, 0x02);
-		dev_info(tas_priv->dev, "%s: chn=%d CHNL_0=0x02 ret=%d\n", __func__, i, ret);
-
-		/* Step 3: Device-specific frame sync (0x1e for dev0, 0x2e for dev1) */
-		fs_val = 0x1e | ((i & 0x01) << 4);
-		ret = tasdevice_dev_write(tas_priv, i, TAS2563_ASI_FS_REG, fs_val);
-		dev_info(tas_priv->dev, "%s: chn=%d ASI_FS=0x%02x ret=%d\n",
-				__func__, i, fs_val, ret);
-
-		/* Step 4: Apply ASI configuration */
-		ret = tasdevice_dev_write(tas_priv, i, TAS2563_ASI_APPLY_REG, 0x00);
-		dev_info(tas_priv->dev, "%s: chn=%d ASI_APPLY ret=%d\n", __func__, i, ret);
-
-		usleep_range(1000, 2000);
-	}
-}
-
 enum device_chip_id {
 	HDA_TAS2563,
 	HDA_TAS2770,
@@ -249,13 +172,6 @@ static void tas2781_hda_playback_hook(struct device *dev, int action)
 		pm_runtime_get_sync(dev);
 		scoped_guard(mutex, &tas_hda->priv->codec_lock) {
 			tasdevice_tuning_switch(tas_hda->priv, 0, false);
-			/* Re-apply ASI configuration for TAS2563 after
-			 * tuning switch - DSP firmware loading can
-			 * overwrite ASI registers.
-			 */
-			if (tas_hda->priv->chip_id == TAS2563)
-				tas2563_post_fw_init(tas_hda->priv);
-
 			tas_hda->priv->playback_started = true;
 		}
 		break;
@@ -419,10 +335,11 @@ static int tas2563_save_calibration(struct tas2781_hda *h)
 	}
 
 	cd->cali_dat_sz_per_dev = TAS2563_CAL_DATA_SIZE * TASDEV_CALIB_N;
+	cd->total_sz = 0;
 
 	/* extra byte for each device is the device number */
-	cd->total_sz = (cd->cali_dat_sz_per_dev + 1) * p->ndev;
-	data = cd->data = devm_kzalloc(p->dev, cd->total_sz,
+	data = cd->data = devm_kzalloc(p->dev,
+		(cd->cali_dat_sz_per_dev + 1) * p->ndev,
 		GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
@@ -436,7 +353,6 @@ static int tas2563_save_calibration(struct tas2781_hda *h)
 			if (ret < 0 || ret >= sizeof(var8) - 1) {
 				dev_err(p->dev, "%s: Read %s failed\n",
 					__func__, var8);
-				cd->total_sz = 0;
 				return -EINVAL;
 			}
 			/*
@@ -454,7 +370,11 @@ static int tas2563_save_calibration(struct tas2781_hda *h)
 				dev_warn(p->dev,
 					"Dev %d: Caldat[%d] read failed %ld\n",
 					i, j, status);
-				cd->total_sz = 0;
+				return -EINVAL;
+			}
+			if (*(uint32_t *)&data[offset] == 0) {
+				dev_warn(p->dev,
+					 "Dev %d: Caldat[%d] is zero\n", i, j);
 				return -EINVAL;
 			}
 			bedata = cpu_to_be32(*(uint32_t *)&data[offset]);
@@ -463,12 +383,7 @@ static int tas2563_save_calibration(struct tas2781_hda *h)
 		}
 	}
 
-	if (cd->total_sz != offset) {
-		dev_err(p->dev, "%s: tot_size(%lu) and offset(%u) mismatch\n",
-			__func__, cd->total_sz, offset);
-		cd->total_sz = 0;
-		return -EINVAL;
-	}
+	cd->total_sz = offset;
 
 	r->r0_reg = TAS2563_CAL_R0;
 	r->invr0_reg = TAS2563_CAL_INVR0;
@@ -558,12 +473,6 @@ static void tasdevice_dspfw_init(void *context)
 		tasdevice_select_cfg_blk(tas_priv,
 			tas_priv->rcabin.init_profile_id,
 			TASDEVICE_BIN_BLK_PRE_POWER_UP);
-
-	/* Apply ASI configuration for TAS2563 after firmware load.
-	 * DSP firmware loading can overwrite ASI registers.
-	 */
-	if (tas_hda->priv->chip_id == TAS2563)
-		tas2563_post_fw_init(tas_hda->priv);
 
 	/* If calibrated data occurs error, dsp will still works with default
 	 * calibrated data inside algo.
@@ -749,7 +658,6 @@ static int tas2781_hda_i2c_probe(struct i2c_client *clt)
 		 */
 		device_name = "INT8866";
 		hda_priv->hda_chip_id = HDA_TAS2563;
-		tas_hda->priv->chip_id = TAS2563;
 		hda_priv->save_calibration = tas2563_save_calibration;
 		tas_hda->priv->global_addr = TAS2563_GLOBAL_ADDR;
 	} else if (strstarts(dev_name(&clt->dev), "i2c-TXNW5825")) {
@@ -872,13 +780,6 @@ static int tas2781_system_resume(struct device *dev)
 		tasdevice_select_cfg_blk(tas_hda->priv,
 			tas_hda->priv->rcabin.init_profile_id,
 			TASDEVICE_BIN_BLK_PRE_POWER_UP);
-
-	/* Re-apply ASI configuration for TAS2563 after system sleep
-	 * resume — amplifiers may lose their register state during
-	 * suspend-to-ram or suspend-to-disk regardless of playback state.
-	 */
-	if (tas_hda->priv->chip_id == TAS2563)
-		tas2563_post_fw_init(tas_hda->priv);
 
 	if (tas_hda->priv->playback_started)
 		tasdevice_tuning_switch(tas_hda->priv, 0, false);
