@@ -104,7 +104,7 @@ config SND_AU8810
 	  Say Y here to include support for Aureal Advantage soundcards.
 
 	  Supported features: Hardware Mixer, SRC, EQ and SPDIF output.
-	  3D support code is in place, but not yet useable. For more info,
+	  3D support code is in place, but not yet usable. For more info,
 	  email the ALSA developer list, or <mjander@users.sourceforge.net>.
 
 	  To compile this driver as a module, choose M here: the module
@@ -133,7 +133,7 @@ config SND_AU8830
 	  Say Y here to include support for Aureal Vortex 2 soundcards.
 
 	  Supported features: Hardware Mixer, SRC, EQ and SPDIF output.
-	  3D support code is in place, but not yet useable. For more info,
+	  3D support code is in place, but not yet usable. For more info,
 	  email the ALSA developer list, or <mjander@users.sourceforge.net>.
 
 	  To compile this driver as a module, choose M here: the module
