@@ -764,10 +764,13 @@ int snd_hdac_bus_alloc_stream_pages(struct hdac_bus *bus)
 
 error_posbuf:
 	snd_dma_free_pages(&bus->posbuf);
+	bus->posbuf.area = NULL;
 error_bdl:
 	list_for_each_entry(s, &bus->stream_list, list) {
-		if (s->bdl.area)
+		if (s->bdl.area) {
 			snd_dma_free_pages(&s->bdl);
+			s->bdl.area = NULL;
+		}
 	}
 	return -ENOMEM;
 }
