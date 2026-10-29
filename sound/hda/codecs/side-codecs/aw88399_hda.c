@@ -355,6 +355,7 @@ const struct dev_pm_ops aw88399_hda_pm_ops = {
 EXPORT_SYMBOL_NS_GPL(aw88399_hda_pm_ops, "SND_HDA_SCODEC_AW88399");
 
 MODULE_DESCRIPTION("AW88399 HDA driver");
+MODULE_IMPORT_NS("SND_SOC_AW88399_LIB");
 MODULE_AUTHOR("Yakov Till <yakov.till@gmail.com>");
 MODULE_AUTHOR("Marco Giunta <marco_giunta@outlook.it>");
 MODULE_LICENSE("GPL");
