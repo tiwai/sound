@@ -2552,6 +2552,9 @@ static const struct usb_audio_quirk_flags_table quirk_flags_table[] = {
 	DEVICE_FLG(0x046d, 0x0aba, /* Logitech PRO X Wireless */
 		   QUIRK_FLAG_MIXER_GET_CUR_OK |
 		   QUIRK_FLAG_MIXER_PLAYBACK_MIN_MUTE),
+	DEVICE_FLG(0x046d, 0x0af7, /* Logitech PRO X 2 LIGHTSPEED */
+		   QUIRK_FLAG_CTL_MSG_DELAY_1M | QUIRK_FLAG_SKIP_IFACE_SETUP |
+		   QUIRK_FLAG_IFACE_DELAY),
 	DEVICE_FLG(0x0499, 0x1506, /* Yamaha THR5 */
 		   QUIRK_FLAG_GENERIC_IMPLICIT_FB),
 	DEVICE_FLG(0x0499, 0x1509, /* Steinberg UR22 */
@@ -3059,7 +3062,7 @@ void snd_usb_init_quirk_flags_parse_string(struct snd_usb_audio *chip,
 	if (!val)
 		return;
 
-	for (p = val; p && *p;) {
+	for (p = strim(val); p && *p;) {
 		/* Each entry consists of VID:PID:flags */
 		field = strsep(&p, ":");
 		if (!field)
