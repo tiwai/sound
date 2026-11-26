@@ -193,7 +193,7 @@ static int follower_put(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
 	struct link_follower *follower = snd_kcontrol_chip(kcontrol);
-	int err, ch, changed = 0;
+	int err, ch, changed = 0, old_vals[2];
 
 	err = follower_init(follower);
 	if (err < 0)
@@ -204,6 +204,10 @@ static int follower_put(struct snd_kcontrol *kcontrol,
 			return -EINVAL;
 	}
 
+	/* save the original cached values */
+	for (ch = 0; ch < follower->info.count; ch++)
+		old_vals[ch] = follower->vals[ch];
+
 	for (ch = 0; ch < follower->info.count; ch++) {
 		if (follower->vals[ch] != ucontrol->value.integer.value[ch]) {
 			changed = 1;
@@ -213,8 +217,13 @@ static int follower_put(struct snd_kcontrol *kcontrol,
 	if (!changed)
 		return 0;
 	err = follower_put_val(follower, ucontrol);
-	if (err < 0)
+	if (err < 0) {
+		/* restore cached values on failure */
+		for (ch = 0; ch < follower->info.count; ch++)
+			follower->vals[ch] = old_vals[ch];
 		return err;
+	}
+
 	return 1;
 }
 
