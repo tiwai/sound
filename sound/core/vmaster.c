@@ -354,17 +354,27 @@ static int sync_followers(struct link_master *master, int old_val, int new_val)
 	struct link_follower *follower;
 	struct snd_ctl_elem_value *uval __free(kfree) =
 		kmalloc_obj(*uval);
+	int err;
 
 	if (!uval)
 		return -ENOMEM;
 	list_for_each_entry(follower, &master->followers, list) {
 		master->val = old_val;
 		uval->id = follower->follower.id;
-		follower_get_val(follower, uval);
+		err = follower_get_val(follower, uval);
+		if (err < 0)
+			goto error;
+
 		master->val = new_val;
-		follower_put_val(follower, uval);
+		err = follower_put_val(follower, uval);
+		if (err < 0)
+			goto error;
 	}
 	return 0;
+
+error:
+	master->val = old_val;
+	return err;
 }
 
 static int master_put(struct snd_kcontrol *kcontrol,
