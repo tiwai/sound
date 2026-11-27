@@ -371,7 +371,7 @@ static void capture_urb_complete(struct urb *urb)
 	struct ua101_urb *ua_urb = urb->context;
 	struct ua101 *ua = ua_urb->ua;
 	struct ua101_stream *stream = &ua->capture;
-	unsigned int frames, write_ptr;
+	unsigned int frames, max_frames, write_ptr;
 	bool do_period_elapsed;
 	int err;
 
@@ -400,6 +400,21 @@ static void capture_urb_complete(struct urb *urb)
 				dev_err(&ua->dev->dev, "USB request error %d: %s\n",
 					err, usb_error_string(err));
 				goto stream_stopped;
+			}
+
+			/*
+			 * The playback stream reuses this packet size, but its
+			 * URB buffers hold only playback.max_packet_bytes.  The
+			 * capture packet size comes from the device, so clamp it
+			 * to what fits into one playback packet.
+			 */
+			max_frames = ua->playback.max_packet_bytes /
+				     ua->playback.frame_bytes;
+			if (unlikely(frames > max_frames)) {
+				dev_warn_ratelimited(&ua->dev->dev,
+						     "capture packet of %u frames clamped\n",
+						     frames);
+				frames = max_frames;
 			}
 
 			/* append packet size to FIFO */
@@ -1031,12 +1046,17 @@ static int detect_usb_format(struct ua101 *ua)
 	ua->playback.usb_pipe = usb_sndisocpipe(ua->dev, usb_endpoint_num(epd));
 	ua->playback.max_packet_bytes = usb_endpoint_maxp(epd);
 
-	if (ua->capture.max_packet_bytes / ua->capture.frame_bytes *
+	/*
+	 * capture_urb_complete() clamps the packet sizes passed to the playback
+	 * stream to playback.max_packet_bytes, so only the nominal rate must
+	 * fit here.  wMaxPacketSize of the capture endpoint may legitimately
+	 * be larger (e.g. UA-1000).
+	 */
+	if (DIV_ROUND_UP(ua->rate, ua->packets_per_second) *
 	    ua->playback.frame_bytes > ua->playback.max_packet_bytes) {
 		dev_err(&ua->dev->dev,
-			"playback packet size %u too small for %u capture frames\n",
-			ua->playback.max_packet_bytes,
-			ua->capture.max_packet_bytes / ua->capture.frame_bytes);
+			"playback packet size %u too small for %u Hz\n",
+			ua->playback.max_packet_bytes, ua->rate);
 		return -ENXIO;
 	}
 	return 0;
