@@ -193,7 +193,7 @@ static int follower_put(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
 	struct link_follower *follower = snd_kcontrol_chip(kcontrol);
-	int err, ch, changed = 0;
+	int err, ch, changed = 0, old_vals[2];
 
 	err = follower_init(follower);
 	if (err < 0)
@@ -204,6 +204,10 @@ static int follower_put(struct snd_kcontrol *kcontrol,
 			return -EINVAL;
 	}
 
+	/* save the original cached values */
+	for (ch = 0; ch < follower->info.count; ch++)
+		old_vals[ch] = follower->vals[ch];
+
 	for (ch = 0; ch < follower->info.count; ch++) {
 		if (follower->vals[ch] != ucontrol->value.integer.value[ch]) {
 			changed = 1;
@@ -213,8 +217,13 @@ static int follower_put(struct snd_kcontrol *kcontrol,
 	if (!changed)
 		return 0;
 	err = follower_put_val(follower, ucontrol);
-	if (err < 0)
+	if (err < 0) {
+		/* restore cached values on failure */
+		for (ch = 0; ch < follower->info.count; ch++)
+			follower->vals[ch] = old_vals[ch];
 		return err;
+	}
+
 	return 1;
 }
 
@@ -345,17 +354,27 @@ static int sync_followers(struct link_master *master, int old_val, int new_val)
 	struct link_follower *follower;
 	struct snd_ctl_elem_value *uval __free(kfree) =
 		kmalloc_obj(*uval);
+	int err;
 
 	if (!uval)
 		return -ENOMEM;
 	list_for_each_entry(follower, &master->followers, list) {
 		master->val = old_val;
 		uval->id = follower->follower.id;
-		follower_get_val(follower, uval);
+		err = follower_get_val(follower, uval);
+		if (err < 0)
+			goto error;
+
 		master->val = new_val;
-		follower_put_val(follower, uval);
+		err = follower_put_val(follower, uval);
+		if (err < 0)
+			goto error;
 	}
 	return 0;
+
+error:
+	master->val = old_val;
+	return err;
 }
 
 static int master_put(struct snd_kcontrol *kcontrol,
