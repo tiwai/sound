@@ -5326,7 +5326,7 @@ static const struct hda_fixup alc269_fixups[] = {
 			{ }
 		},
 		.chained = true,
-		.chain_id = ALC269_FIXUP_LIMIT_INT_MIC_BOOST
+		.chain_id = ALC269_FIXUP_THINKPAD_LIMIT_INT_MIC_BOOST
 	},
 	[ALC290_FIXUP_SUBWOOFER_HSJACK] = {
 		.type = HDA_FIXUP_PINS,
@@ -5441,7 +5441,7 @@ static const struct hda_fixup alc269_fixups[] = {
 		.type = HDA_FIXUP_FUNC,
 		.v.func = alc_fixup_tpt440_dock,
 		.chained = true,
-		.chain_id = ALC269_FIXUP_LIMIT_INT_MIC_BOOST
+		.chain_id = ALC269_FIXUP_THINKPAD_LIMIT_INT_MIC_BOOST
 	},
 	[ALC292_FIXUP_TPT440] = {
 		.type = HDA_FIXUP_FUNC,
