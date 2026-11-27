@@ -7578,6 +7578,8 @@ static const struct hda_fixup alc269_fixups[] = {
 	[ALC285_LENOVO_DAC_RENAME] = {
 		.type = HDA_FIXUP_FUNC,
 		.v.func = alc285_lenovo_dac_rename,
+		.chained = true,
+		.chain_id = ALC269_FIXUP_THINKPAD_ACPI,
 	},
 	[ALC287_FIXUP_YOGA9_SPEAKER2_TO_DAC1] = {
 		.type = HDA_FIXUP_FUNC,
