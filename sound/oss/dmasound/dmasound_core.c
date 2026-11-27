@@ -1377,18 +1377,29 @@ int dmasound_init(void)
 	/* Set up sound queue, /dev/audio and /dev/dsp. */
 
 	/* Set default settings. */
-	if ((res = sq_init()) < 0)
-		return res ;
+	res = sq_init();
+	if (res < 0)
+		return res;
 
 	/* Set up /dev/sndstat. */
-	if ((res = state_init()) < 0)
-		return res ;
+	res = state_init();
+	if (res < 0) {
+		if (sq_unit >= 0)
+			unregister_sound_dsp(sq_unit);
+		return res;
+	}
 
 	/* Set up /dev/mixer. */
 	mixer_init();
 
 	if (!dmasound.mach.irqinit()) {
 		printk(KERN_ERR "DMA sound driver: Interrupt initialization failed\n");
+		if (mixer_unit >= 0)
+			unregister_sound_mixer(mixer_unit);
+		if (state_unit >= 0)
+			unregister_sound_special(state_unit);
+		if (sq_unit >= 0)
+			unregister_sound_dsp(sq_unit);
 		return -ENODEV;
 	}
 	irq_installed = 1;
